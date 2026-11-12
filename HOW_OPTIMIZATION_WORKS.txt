@@ -1,0 +1,157 @@
+HOW THE OPTIMIZATION WAS DONE
+Zirconia oxygen sensor: predicting O2 concentration (C) from pressure (P) and current (I)
+=====================================================================================
+
+THE GOAL IN ONE LINE
+--------------------
+We have a physics equation that turns P and I into C. When we put the real
+measurements in, it does not give exactly 21 %, 30 %, 35 % or 40 %.
+So we "tune" a few numbers in the equation until its answers come as close
+as possible to the known concentrations.
+
+This is done in two stages:
+  Stage 1: physics only. Tune A and B inside the physics equation.
+  Stage 2: correction. Fix the leftover error by adjusting the result
+           (adding to it and multiplying it).
+
+
+THE DATA WE TUNE AGAINST
+------------------------
+27 pressures x 4 known concentrations (21, 30, 35, 40 %) = 108 readings.
+Each reading = (pressure, current, true concentration).
+
+
+-------------------------------------------------------------------------------------
+STAGE 1: PHYSICS ONLY (finding A and B)
+-------------------------------------------------------------------------------------
+
+The equation
+  C = 100 x [ 1 - exp( -(I R T L / 4 F S P) x (A/Dk + B/Db) ) ]
+
+  Dk = Knudsen diffusion (oxygen hitting the pore walls). It does not depend on pressure.
+  Db = bulk diffusion (oxygen hitting other gas molecules). It gets smaller as pressure rises.
+  A  = how strongly the Knudsen part counts
+  B  = how strongly the bulk part counts
+  When A = 1 and B = 1 we have the pure textbook theory.
+
+What "best A and B" means
+  For every one of the 108 readings:
+      error = predicted C - true C
+  Square each error (so minus and plus errors both count, and big errors
+  count a lot more), then add them all up:
+      Loss(A, B) = sum of (error)^2
+  The best A and B are the pair that make this Loss as small as possible.
+
+How the computer finds them (simple version)
+  Step 1. A quick first guess.
+          The equation can be rearranged as
+              -ln(1 - C/100) = A x p + B x q
+          where p and q are numbers we can compute from P, I and the physics
+          constants. This is a straight-line problem in A and B, so ordinary
+          least squares (the usual "line of best fit") gives a first guess
+          straight away.
+
+  Step 2. Improve the guess step by step (Levenberg-Marquardt method).
+          Think of the Loss as a landscape of hills and valleys, where every
+          point (A, B) has a height equal to the Loss. We want the lowest point.
+            - Stand at the current (A, B).
+            - Look at how the errors change if A or B is nudged a little
+              (this is the "slope", called the Jacobian).
+            - Take a step downhill.
+            - If the step made the Loss smaller, keep it and take bolder steps.
+              If it made the Loss bigger, undo it and take a smaller, more careful step.
+            - Repeat until the Loss stops getting smaller.
+          We start from the theory point (A = 1, B = 1) and also from the
+          Step 1 guess, then keep whichever ends up lower.
+          A and B are searched as log(A) and log(B) so they can never go negative.
+
+  Step 3. Check that A and B are trustworthy.
+          From the slopes at the best point we compute the uncertainty
+          (the +/- value) for A and B and how strongly they depend on each other
+          (correlation). The correlation is -0.80, which is below 0.95. That means the data can
+          tell A and B apart. This works because at low pressure the Knudsen part
+          dominates and at high pressure the bulk part dominates, and our data covers both.
+
+Result of Stage 1
+  A = 0.774 (+/- 0.058)     B = 0.986 (+/- 0.025)
+  Took 5 improvement steps. Loss went from 1566 down to 1066.
+  Average error (RMSE): 3.81 % (theory A=B=1)  ->  3.14 % (optimized A, B)
+
+Why Stage 1 is not enough
+  The physics says that at a fixed pressure the current follows -ln(1 - C/100).
+  The real sensor does not follow that shape exactly. The 21 % current is much
+  lower than the law expects compared with the 30-40 % currents.
+  A and B can only stretch the whole curve up or down at each pressure.
+  They cannot bend its shape, so 21 % stays about 5 % too low and 30-35 % a bit too high.
+  No values of A and B can fix this.
+
+
+-------------------------------------------------------------------------------------
+STAGE 2: CORRECTION (adjusting the result)
+-------------------------------------------------------------------------------------
+
+Idea
+  Keep A and B from Stage 1, and keep the physics answer (call it C_phys).
+  Then pass C_phys through a small correction formula that adds to it and multiplies it:
+
+      C_final = k0 + k1 x exp( k2 x C_phys )
+
+      k0 = a number added to the result
+      k1 = a number multiplying the result
+      k2 = controls how quickly the correction grows
+
+  k1 and k2 are forced to be positive. That guarantees a higher current
+  always gives a higher concentration (the curve never turns back on itself).
+
+How the k values are found
+  The same way as A and B:
+    1. A quick first guess: set k0 just below the lowest concentration, then
+       fit a straight line to log(C - k0) against C_phys.
+    2. Levenberg-Marquardt again minimizes
+           sum of (C_final - true C)^2
+       until the Loss stops dropping (7 steps).
+
+Result of Stage 2
+  k0 = 18.098     k1 = 0.7656     k2 = 0.0853
+  Average error (RMSE): 3.14 %  ->  0.85 %      R^2: 0.80 -> 0.985
+  Example: P = 56.89, I = 8.082 (true value 21 %)
+      theory 19.09 %   physics only 16.91 %   physics + correction 21.34 %
+
+
+-------------------------------------------------------------------------------------
+DID WE JUST MEMORIZE THE DATA? (validation)
+-------------------------------------------------------------------------------------
+  Test 1: Hide every 4th pressure, re-tune everything on the rest, then
+          predict the hidden ones.     Error on hidden data: 1.09 %
+  Test 2: Hide one pressure at a time (27 times), re-tune, predict it.
+          Error: 0.87 %  (almost the same as 0.85 % on all data)
+  So the model works on readings it has never seen. It is not just memorizing.
+
+
+-------------------------------------------------------------------------------------
+WHY NOT EXACTLY 0 % ERROR?
+-------------------------------------------------------------------------------------
+  Some measurements go against the trend. For example, the 21 % current drops from
+  9.80 to 8.90 uA when pressure rises from 87.72 to 92.18. The spreadsheet also
+  flags 8 cells as hard to read. Every correction shape we tried stopped
+  at about 0.8 %, so that is roughly the noise level of this data.
+
+
+-------------------------------------------------------------------------------------
+USING THE MODEL (prediction)
+-------------------------------------------------------------------------------------
+  Only P and I are needed:
+    1. Compute Dk and Db for this pressure and temperature.
+    2. C_phys  = physics equation with A = 0.774, B = 0.986
+    3. C_final = 18.098 + 0.7656 x exp(0.0853 x C_phys)
+  Trust it inside the tested range: P 56.89 to 595, C 21 to 40 %.
+
+
+NOTE ON PARAMETERS
+  The sensor geometry (pore radius, area, thickness) and the temperature
+  (700 C) are placeholders. If you change them, A and B change to
+  compensate, but the predicted concentrations stay the same. Enter the real
+  sensor values if you want A and B to have a physical meaning.
+
+Code: model.py -> fit_AB() (Stage 1), fit_correction() (Stage 2),
+      levenberg_marquardt() (the step-by-step minimizer).

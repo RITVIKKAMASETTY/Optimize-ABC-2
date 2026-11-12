@@ -1,0 +1,52 @@
+Loaded 27 pressures x 4 concentrations = 108 observations from /Volumes/Untitled/optimzeee/zirconia_sensor_experimental_data.xlsx
+Theory  (A=B=1)      : {'MAE': 3.43, 'RMSE': 3.808, 'R2': 0.705, 'MaxAE': 7.508, 'Bias': 1.298, 'SSE': 1566.454}
+Physics fit A=0.7744  B=0.98619  corr(A,B)=-0.803
+  metrics            : {'MAE': 2.525, 'RMSE': 3.142, 'R2': 0.8, 'MaxAE': 6.932, 'Bias': -0.632, 'SSE': 1066.442}
+Correction k0,k1,k2  : [18.09801, 0.76563, 0.08526]
+  metrics            : {'MAE': 0.542, 'RMSE': 0.849, 'R2': 0.985, 'MaxAE': 3.284, 'Bias': -0.0, 'SSE': 77.925}
+Leave-one-pressure-out RMSE: physics 3.144  corrected 0.871
+Example: P=56.89, I=8.082 -> {'C_phys': 16.914, 'C_corr': 21.336, 'C_theory': 19.088}
+Open http://127.0.0.1:5050
+ * Serving Flask app 'app'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on http://127.0.0.1:5050
+[33mPress CTRL+C to quit[0m
+127.0.0.1 - - [12/Nov/2026 08:30:25] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:30:25] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:30:25] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:30:25] "GET /static/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:30:25] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:04] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "GET /static/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "GET /api/results HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "[33mGET /apple-touch-icon-precomposed.png HTTP/1.1[0m" 404 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "[33mGET /apple-touch-icon.png HTTP/1.1[0m" 404 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:06] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+127.0.0.1 - - [12/Nov/2026 08:34:28] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:30] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:34:33] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:07] "GET /api/predict?P=5&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:08] "GET /api/predict?P=59&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:08] "GET /api/predict?P=595&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:13] "GET /api/predict?P=595&I=3 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:14] "GET /api/predict?P=595&I=37 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:15] "GET /api/predict?P=595&I=37 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:15] "GET /api/predict?P=595&I=37.9 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:35:16] "GET /api/predict?P=595&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:15] "GET /api/predict?P=594&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:16] "GET /api/predict?P=593&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:16] "GET /api/predict?P=592&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:17] "GET /api/predict?P=592&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:26] "GET /api/predict?P=5&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:26] "GET /api/predict?P=54&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:27] "GET /api/predict?P=549&I=37.93 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:34] "GET /api/predict?P=549&I=3 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:34] "GET /api/predict?P=549&I=37 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:35] "GET /api/predict?P=549&I=37 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:36] "GET /api/predict?P=549&I=37.7 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:37] "GET /api/predict?P=549&I=37.73 HTTP/1.1" 200 -
+127.0.0.1 - - [12/Nov/2026 08:36:46] "GET /api/predict?P=78.72&I=9.289 HTTP/1.1" 200 -

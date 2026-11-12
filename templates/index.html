@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zirconia O₂ Model</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="nav">
+  <div class="brand"><span class="dot">O₂</span>Zirconia<span class="sep">/</span><span class="sub">Physics model</span></div>
+  <nav>
+    <a href="#predict">Predict</a><a href="#calibration">Calibration</a><a href="#optimization">Optimization</a>
+    <a href="#validation">Validation</a><a href="#parameters">Parameters</a><a href="#data">Data</a>
+  </nav>
+  <div class="right"><span class="pill" id="status"><i></i>Loading…</span></div>
+</header>
+
+<main id="app">
+  <div class="loading">Calibrating model…</div>
+</main>
+<footer>Physics-based inverse model · modified Bosanquet diffusion <span style="font-family:var(--mono)">1/Deff = A/Dk + B/Db</span> · runs fully offline (Flask + numpy, no CDN)</footer>
+<div class="toast" id="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
