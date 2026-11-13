@@ -1,9 +1,9 @@
-"""Flask web app. Run:  python app.py   (or from Jupyter: run_app.ipynb)"""
+"""Flask web app. Run:  python app.py   (or from Jupyter: run.ipynb)"""
 import os
 import numpy as np
 from flask import Flask, jsonify, render_template, request
 
-from model import DEFAULT_CONFIG, STATE, calibrate, predict_point
+from model import DEFAULT_CONFIG, STATE, calibrate, clean_config, predict_point
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "5050"))
@@ -37,9 +37,7 @@ def api_predict():
 def api_calibrate():
     body = request.get_json(silent=True) or {}
     try:
-        cfg = {**DEFAULT_CONFIG, **{k: float(v) for k, v in body.items() if k in DEFAULT_CONFIG}}
-        if any(cfg[k] <= 0 for k in cfg):
-            raise ValueError("all parameters must be > 0")
+        cfg = clean_config(body)
         result = calibrate(cfg)
     except (ValueError, np.linalg.LinAlgError, OverflowError) as exc:
         return jsonify({"error": f"Calibration failed: {exc}"}), 400

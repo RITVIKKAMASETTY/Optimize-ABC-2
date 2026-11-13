@@ -1,36 +1,29 @@
 # %% [markdown]
-# # Zirconia O2 sensor: physics-based concentration model
+# # Zirconia O2 sensor: physics-based concentration model (single-file version)
 #
-# **Input:** pressure `P` and sensor current `I`. **Output:** oxygen concentration `C (%)`.
+# Same model as `app.py` + `model.py`, with everything in cells. Input: pressure `P` and current `I`; output: O2 %.
 #
-# The model has three layers. Each one is calibrated on `zirconia_sensor_experimental_data.xlsx`:
+# 1. **Physics fit.** `1/Deff = A/Dk + B/Db`, with A and B found by Levenberg-Marquardt on the concentration error.
+# 2. **Result correction.** `C = k0 + k1*Cp + k2*Cp^2 + k3*Cp^3` (monotonic cubic, least squares).
+# 3. **Outlier screen.** Readings far from all the others (robust MAD rule) are left out of the fit.
 #
-# 1. **Theory.** `1/Deff = 1/Dk + 1/Db` (Bosanquet), with `A = B = 1`.
-# 2. **Physics fit.** `1/Deff = A/Dk + B/Db`, with `A` and `B` found by Levenberg-Marquardt
-#    least squares on the concentration error.
-# 3. **Result correction.** The physics fit still leaves a few % of error, because the measured
-#    current rises with concentration differently than `ln(1 - C/100)` predicts. So the physics
-#    output is mapped through `C = k0 + k1 * exp(k2 * C_phys)`, which adds to it and scales it.
-#    The map is monotonic, so a higher current always gives a higher concentration.
-#
-# Dependencies: **numpy + flask** only. The `.xlsx` file is read with the Python standard library,
-# and the charts are plain SVG drawn by hand-written JavaScript. No CDN, so it works with no internet.
-#
-# Run every cell. The last cell starts the web UI at http://127.0.0.1:5050.
+# Only numpy + flask; no CDN. Run all cells, then open http://127.0.0.1:5050.
 
 # %%
-import json
+import glob
 import math
 import os
-import threading
+import re
 import zipfile
 import xml.etree.ElementTree as ET
 
 import numpy as np
-from flask import Flask, Response, jsonify, request
 
-DATA_FILE = "zirconia_sensor_experimental_data.xlsx"
-LEVELS = np.array([21.0, 30.0, 35.0, 40.0])          # % O2 of columns 2..5
+HERE = os.path.abspath(".")  # notebook folder
+# Data file: set the ZIRCONIA_DATA env var to use another workbook. Otherwise the default
+# name is used; if that is missing, any .xlsx in this folder; if none, the embedded copy.
+DATA_FILE = os.environ.get("ZIRCONIA_DATA",
+                           os.path.join(HERE, "zirconia_sensor_complete_experimental_data.xlsx"))
 
 F_CONST = 96485.33212       # C/mol
 R_CONST = 8.314462618       # J/(mol K)
@@ -49,26 +42,42 @@ DEFAULT_CONFIG = {
     "P0": 101.325,        # reference pressure, in the same unit as the data (kPa)
     "P_to_Pa": 1000.0,    # data pressure unit -> Pa (kPa = 1000)
     "I_to_A": 1.0e-6,     # data current unit -> A (uA = 1e-6)
+    "exclude_outliers": 1.0,   # 1 = leave out readings that disagree strongly with all others, 0 = use every reading
+    "outlier_z": 3.5,          # cut-off in robust standard deviations (MAD)
 }
+NONNEG_KEYS = {"exclude_outliers"}
 
-# Backup copy of the spreadsheet values, used if the .xlsx file is not found.
+# Backup copy of the spreadsheet, used if no .xlsx file is found.
+FALLBACK_LEVELS = [21, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 95]
 FALLBACK_ROWS = [
-    [56.89, 8.082, 17.89, 19.78, 21.27], [62.65, 8.132, 18.85, 20.53, 21.56],
-    [65.71, 9.011, 19.22, 21.09, 22.56], [72.76, 9.143, 19.63, 21.16, 23.78],
-    [78.72, 9.289, 19.9, 22.84, 23.91], [87.72, 9.801, 20.5, 23.46, 24.45],
-    [92.18, 8.901, 21.45, 24.47, 25.94], [106, 9.221, 21.85, 24.99, 26.94],
-    [116.5, 9.506, 22.26, 25.86, 27.19], [128.5, 9.612, 22.93, 26.56, 28.88],
-    [144.2, 10.012, 23.49, 27.4, 29.89], [155.5, 10.613, 24.05, 27.98, 30.76],
-    [171.1, 9.879, 24.67, 28.66, 31.56], [188.3, 9.992, 23.06, 29.37, 32.99],
-    [207.9, 10.132, 25.49, 29.96, 32.93], [227.9, 10.161, 26.04, 30.49, 33.8],
-    [250.5, 10.952, 26.44, 30.91, 34.68], [273.7, 11.321, 26.76, 31.48, 35.091],
-    [301.4, 11.541, 27.22, 31.99, 35.04], [329.8, 11.608, 27.47, 32.33, 36.01],
-    [360.3, 11.928, 27.88, 32.741, 36.93], [393.1, 12.021, 28.16, 33.06, 36.53],
-    [428.1, 12.512, 28.08, 33.26, 36.88], [465.9, 12.696, 28.1, 33.58, 37.19],
-    [506.1, 12.88, 28.27, 33.87, 37.49], [549, 12.94, 28.43, 34.08, 37.73],
-    [595, 12.993, 28.7, 34.3, 37.93],
+    [56.89, 8.082, 17.89, 19.78, 21.27, 24.9, 27.35, 31.54, 29.986, 39.96, 45.17, 48.3, 63.51, 59.988, 59.76],
+    [62.65, 8.132, 18.88, 20.53, 21.56, 26.3, 28.03, 32.08, 27.301, 41.46, 48.81, 49.74, 64.41, 62.89, 59.88],
+    [65.71, 9.011, 19.22, 21.09, 22.56, 26.9, 28.91, 33.4, 27.108, 43.38, 49.24, 51.9, 67.9, 64.85, 67.48],
+    [72.76, 9.143, 19.63, 21.16, 23.78, 27.43, 30.44, 35.32, 29.196, 45.76, 50.98, 54.5, 66.64, 69.48, 114.95],
+    [78.72, 9.289, 19.9, 22.84, 23.91, 28.8, 31.95, 36.16, 30.587, 46.91, 52.41, 57.8, 64.59, 73.54, 117.89],
+    [87.72, 9.801, 20.5, 23.46, 24.45, 29.86, 33.66, 38.45, 31.272, 48.67, 55.96, 60.3, 67.79, 83.76, 121.76],
+    [92.18, 8.901, 21.45, 24.47, 25.94, 30.31, 34.7, 39.85, 32.415, 51.33, 58.74, 62.9, 68.61, 87.91, 129.08],
+    [106, 9.221, 21.85, 24.99, 26.94, 32.42, 36.38, 40.98, 34.472, 53.63, 60.61, 65.8, 71.98, 91.02, 138.39],
+    [116.5, 9.506, 22.26, 25.86, 27.19, 33.45, 37.92, 42.73, 36.046, 54.98, 63.11, 68.73, 74.47, 94.48, 146.001],
+    [128.5, 9.612, 22.93, 26.56, 28.88, 35.25, 39.01, 44.23, 37.489, 57.78, 65.91, 71.49, 78.76, 99.61, 154.601],
+    [144.2, 10.012, 23.49, 27.4, 29.89, 36.09, 39.96, 45.75, 39.49, 58.67, 68.46, 76.29, 81.33, 129.79, 164.201],
+    [155.5, 10.613, 24.05, 27.98, 30.76, 37.16, 41.3, 46.86, 40.577, 60.81, 70.54, 80.59, 85.28, 134.72, 173.018],
+    [171.1, 9.879, 24.67, 28.66, 31.56, 37.88, 41.94, 48.49, 41.736, 62.9, 72.29, 82.41, 87.54, 138.58, 179.796],
+    [188.3, 9.992, 23.06, 29.37, 32.99, 38.62, 42.63, 48.88, 42.262, 64.24, 74.77, 84.31, 90.2, 141.97, 186.142],
+    [207.9, 10.132, 25.49, 29.96, 32.93, 39.45, 43.8, 50.51, 42.992, 65.97, 76.86, 86.41, 93.24, 144.86, 195.697],
+    [227.9, 10.161, 26.04, 30.49, 33.8, 40.19, 44.71, 51.47, 45.259, 67.47, 78.49, 88.38, 94.81, 148.55, 200.312],
+    [250.5, 10.912, 26.44, 30.91, 34.68, 40.76, 45.69, 52.93, 45.956, 68.25, 80.3, 89.98, 97.45, 151.36, 207.903],
+    [273.7, 11.321, 26.76, 30.98, 35.091, 41.37, 46.33, 53.61, 46.94, 69.55, 81.86, 91.86, 99.44, 154.67, 211.759],
+    [301.4, 11.541, 27.22, 31.99, 35.04, 41.95, 47.1, 54.69, 47.357, 70.73, 83.23, 93.13, 101.17, 156.14, 218.369],
+    [329.8, 11.608, 27.47, 32.33, 36.01, 42.45, 47.74, 55.38, 47.441, 71.55, 84.48, 94.46, 102.63, 158.11, 220.01],
+    [360.3, 11.928, 27.88, 32.741, 36.93, 42.92, 48.44, 56.07, 48.593, 72.44, 85.65, 95.55, 112.6, 159.79, 224.734],
+    [393.1, 12.021, 28.16, 33.06, 36.53, 43.28, 49.11, 56.72, 49.158, 73.19, 86.57, 96.53, 120.91, 161.27, 227.429],
+    [428.1, 12.512, 28.08, 33.26, 36.88, 43.67, 49.47, 57.19, 49.353, 73.85, 87.37, 97.48, 126.35, 162.62, 230.961],
+    [465.9, 12.696, 28.1, 33.58, 37.19, 44.02, 49.93, 57.76, 50.777, 74.44, 88.13, 98.45, 130.33, 164.14, 232.285],
+    [506.1, 12.88, 28.27, 33.87, 37.49, 44.35, 50.41, 58.25, 50.15, 74.91, 88.93, 99.25, 134.39, 165.19, 234.137],
+    [549, 12.94, 28.43, 34.08, 37.73, 44.63, 50.86, 58.68, 51.558, 75.36, 89.63, 99.7, 135.35, 166.21, 236.74],
+    [595, 12.993, 28.57, 34.3, 37.93, 45.94, 51.18, 59.09, 51.902, 75.69, 90.3, 99.98, 136.065, 166.98, 238.648],
 ]
-
 
 # %%
 # ---------- Data loading (standard library xlsx reader, no openpyxl needed) ----------
@@ -82,38 +91,79 @@ def read_xlsx_first_sheet(path):
         sheet = ET.fromstring(z.read("xl/worksheets/sheet1.xml"))
     rows = []
     for row in sheet.find("m:sheetData", ns).findall("m:row", ns):
-        vals = []
+        vals = {}
         for c in row.findall("m:c", ns):
+            col = re.match(r"[A-Z]+", c.get("r")).group(0)
+            idx = 0
+            for ch in col:
+                idx = idx * 26 + ord(ch) - 64
             v = c.find("m:v", ns)
             if v is None:
-                vals.append(None)
+                val = None
             elif c.get("t") == "s":
-                vals.append(shared[int(v.text)])
+                val = shared[int(v.text)]
             else:
-                vals.append(float(v.text))
-        rows.append(vals)
+                try:
+                    val = float(v.text)
+                except ValueError:
+                    val = None
+            vals[idx - 1] = val
+        width = max(vals) + 1 if vals else 0
+        rows.append([vals.get(i) for i in range(width)])
     return rows
 
 
-def load_dataset(path=DATA_FILE):
-    try:
-        raw = read_xlsx_first_sheet(path)
-        rows = [r[:5] for r in raw[1:] if r and all(isinstance(x, float) for x in r[:5])]
-        source = os.path.abspath(path)
-    except (OSError, KeyError, ET.ParseError, zipfile.BadZipFile):
-        rows, source = FALLBACK_ROWS, "embedded fallback copy"
-    arr = np.array(rows, dtype=float)
-    return arr[:, 0], arr[:, 1:], source
+def parse_table(raw):
+    """Header row: 'Pressure', then one column per concentration, e.g. 'Current at 21% O2 (uA)'."""
+    header = raw[0]
+    cols, levels = [], []
+    for j, h in enumerate(header[1:], start=1):
+        m = re.search(r"(\d+(?:\.\d+)?)\s*%", str(h or ""))
+        if not m:
+            m = re.fullmatch(r"\s*(0?\.\d+|\d+(?:\.\d+)?)\s*", str(h or ""))   # e.g. 0.21 or 21
+        if m:
+            v = float(m.group(1))
+            levels.append(v * 100 if v <= 1 else v)
+            cols.append(j)
+    P, I = [], []
+    for r in raw[1:]:
+        if not r or not isinstance(r[0], float):
+            continue
+        P.append(r[0])
+        I.append([r[j] if j < len(r) and isinstance(r[j], float) else np.nan for j in cols])
+    P, I, levels = np.array(P), np.array(I, float), np.array(levels)
+    keep = ~np.all(np.isnan(I), axis=0)                 # drop empty columns (e.g. a blank 90 % column)
+    return P, I[:, keep], levels[keep]
 
 
-P_ROWS, I_TABLE, DATA_SOURCE = load_dataset()
-# Long format: one observation per (pressure, concentration)
-OBS_P = np.repeat(P_ROWS, len(LEVELS))
-OBS_I = I_TABLE.ravel()
-OBS_C = np.tile(LEVELS, len(P_ROWS))
-OBS_ROW = np.repeat(np.arange(len(P_ROWS)), len(LEVELS))
-print(f"Loaded {len(P_ROWS)} pressures x {len(LEVELS)} concentrations = {len(OBS_C)} observations from {DATA_SOURCE}")
+def find_data_file():
+    if os.path.exists(DATA_FILE):
+        return DATA_FILE
+    files = sorted(glob.glob(os.path.join(HERE, "*.xlsx")), key=os.path.getmtime, reverse=True)
+    return files[0] if files else None
 
+
+def load_dataset():
+    path = find_data_file()
+    if path:
+        try:
+            P, I, lv = parse_table(read_xlsx_first_sheet(path))
+            if len(P) and len(lv):
+                return P, I, lv, os.path.abspath(path)
+        except (OSError, KeyError, ET.ParseError, zipfile.BadZipFile):
+            pass
+    arr = np.array(FALLBACK_ROWS, float)
+    return arr[:, 0], arr[:, 1:], np.array(FALLBACK_LEVELS, float), "embedded fallback copy"
+
+
+P_ROWS, I_TABLE, LEVELS, DATA_SOURCE = load_dataset()
+_valid = ~np.isnan(I_TABLE.ravel())
+OBS_P = np.repeat(P_ROWS, len(LEVELS))[_valid]
+OBS_I = I_TABLE.ravel()[_valid]
+OBS_C = np.tile(LEVELS, len(P_ROWS))[_valid]
+OBS_ROW = np.repeat(np.arange(len(P_ROWS)), len(LEVELS))[_valid]
+print(f"Loaded {len(P_ROWS)} pressures x {len(LEVELS)} concentrations "
+      f"({LEVELS.min():g}-{LEVELS.max():g} %) = {len(OBS_C)} readings from {DATA_SOURCE}")
 
 # %%
 # ---------- Physics ----------
@@ -143,20 +193,45 @@ def c_physics(I, P, A, B, cfg):
 
 def current_physics(C, P, A, B, cfg):
     """Forward model: I = -(4 F S P Deff / R T L) ln(1 - C/100), in data units."""
-    p1, q1 = basis(1.0, P, cfg)                       # exponent per unit current
-    return -np.log(1.0 - np.asarray(C, float) / 100.0) / (A * p1 + B * q1)
-
-
-def correction(Cp, k):
-    """Result correction: C = k0 + k1 * exp(k2 * C_phys)   (monotonic if k1, k2 > 0)"""
-    return k[0] + k[1] * np.exp(k[2] * np.asarray(Cp, float))
-
-
-def correction_inverse(C, k):
-    C = np.asarray(C, float)
+    p1, q1 = basis(1.0, P, cfg)
     with np.errstate(invalid="ignore", divide="ignore"):
-        return np.log((C - k[0]) / k[1]) / k[2]
+        return -np.log(1.0 - np.asarray(C, float) / 100.0) / (A * p1 + B * q1)
 
+# %%
+# ---------- Stage 2 correction: monotonic cubic on the physics result ----------
+def correction(Cp, corr):
+    """C = k0 + k1*Cp + k2*Cp^2 + k3*Cp^3 inside the calibrated band [lo, hi].
+    Outside the band it continues as a straight line with the edge slope, so it never turns back.
+    The result is clipped to 0-100 %."""
+    k, lo, hi = np.asarray(corr["k"]), corr["lo"], corr["hi"]
+    Cp = np.asarray(Cp, float)
+    dk = np.polyder(k[::-1])[::-1] if len(k) > 1 else np.array([0.0])
+    f = lambda x: np.polyval(k[::-1], x)
+    df = lambda x: np.polyval(dk[::-1], x)
+    out = np.where(Cp < lo, f(lo) + df(lo) * (Cp - lo),
+                   np.where(Cp > hi, f(hi) + df(hi) * (Cp - hi), f(Cp)))
+    return np.clip(out, 0.0, 100.0)
+
+
+def correction_inverse(C, corr):
+    g = np.linspace(-20, 120, 4001)
+    y = correction(g, corr)
+    keep = np.concatenate([[True], np.diff(y) > 1e-12])
+    return np.interp(np.asarray(C, float), y[keep], g[keep], left=np.nan, right=np.nan)
+
+
+def fit_correction(Cp, C):
+    """Least squares (closed form) for k0..k3. If the cubic is not monotonic over the
+    calibrated band, fall back to a quadratic, then a straight line."""
+    lo, hi = float(np.min(Cp)), float(np.max(Cp))
+    grid = np.linspace(lo, hi, 400)
+    for deg in (3, 2, 1):
+        V = np.vander(Cp, deg + 1, increasing=True)
+        k = np.linalg.lstsq(V, C, rcond=None)[0]
+        if np.all(np.diff(np.polyval(k[::-1], grid)) > 0):
+            break
+    k = np.concatenate([k, np.zeros(4 - len(k))])
+    return {"k": k.tolist(), "lo": lo, "hi": hi, "degree": int(deg)}
 
 # %%
 # ---------- Optimizer: Levenberg-Marquardt written in numpy ----------
@@ -171,7 +246,7 @@ def numeric_jacobian(fun, x, r0):
     return J
 
 
-def levenberg_marquardt(fun, x0, max_iter=300, tol=1e-12, record=None):
+def levenberg_marquardt(fun, x0, max_iter=300, tol=1e-12):
     """Minimise sum(fun(x)^2). Returns x and the iteration history."""
     x = np.array(x0, float)
     r = fun(x)
@@ -202,7 +277,8 @@ def levenberg_marquardt(fun, x0, max_iter=300, tol=1e-12, record=None):
 
 
 def metrics(pred, actual):
-    e = np.asarray(pred) - np.asarray(actual)
+    pred, actual = np.asarray(pred), np.asarray(actual)
+    e = pred - actual
     ss_tot = float(np.sum((actual - np.mean(actual)) ** 2))
     out = {
         "MAE": float(np.mean(np.abs(e))),
@@ -211,26 +287,21 @@ def metrics(pred, actual):
         "MaxAE": float(np.max(np.abs(e))),
         "Bias": float(np.mean(e)),
         "SSE": float(np.sum(e ** 2)),
+        "n": int(len(e)),
     }
     out["per_level"] = {f"{c:g}": float(np.mean(np.abs(e[actual == c]))) for c in LEVELS if np.any(actual == c)}
     return out
-
 
 # %%
 # ---------- Calibration ----------
 def fit_AB(I, P, C, cfg, start=(1.0, 1.0)):
     """Stage 1: find A, B > 0 minimising sum (C_phys - C_actual)^2.
-
-    1. Linearize: -ln(1 - C/100) = A p + B q is linear in A and B, so ordinary least squares gives a
-       closed-form estimate.
-    2. Refine with Levenberg-Marquardt on the real concentration error. The parameters are
-       log A and log B, which keeps both positive. LM is started from the theory point (1, 1)
-       and from the linear estimate, and the run with the lower loss is kept.
-    """
+    1. Linear start: -ln(1 - C/100) = A p + B q is linear in A, B, so ordinary least squares gives a guess.
+    2. Levenberg-Marquardt on the real concentration error, over log A and log B (keeps them positive),
+       started from the theory point (1, 1) and from the linear guess. The lower loss wins."""
     p, q = basis(I, P, cfg)
     X = -np.log(1.0 - C / 100.0)
-    lin = np.linalg.lstsq(np.column_stack([p, q]), X, rcond=None)[0]
-    lin = np.maximum(lin, 1e-12)
+    lin = np.maximum(np.linalg.lstsq(np.column_stack([p, q]), X, rcond=None)[0], 1e-12)
 
     def resid(theta):
         return c_physics(I, P, math.exp(theta[0]), math.exp(theta[1]), cfg) - C
@@ -241,39 +312,40 @@ def fit_AB(I, P, C, cfg, start=(1.0, 1.0)):
         if best is None or hist[-1]["loss"] < best[1][-1]["loss"] - 1e-12:
             best = (th, hist)
     th, hist = best
-    A, B = math.exp(th[0]), math.exp(th[1])
     for h in hist:
         h["A"], h["B"] = math.exp(h["x"][0]), math.exp(h["x"][1])
-    return A, B, hist, {"A": float(lin[0]), "B": float(lin[1])}
-
-
-def fit_correction(Cp, C):
-    """Stage 2: with A and B fixed, fit C = k0 + k1 exp(k2 Cp). k1 and k2 are fitted in log
-    space so they stay positive, which makes the map monotonic."""
-    k0_init = float(np.min(C)) - 2.0
-    slope, icpt = np.polyfit(Cp, np.log(np.maximum(C - k0_init, 1e-6)), 1)
-    x0 = np.array([k0_init, icpt, math.log(max(slope, 1e-4))])
-
-    def unpack(x):
-        return np.array([x[0], math.exp(x[1]), math.exp(x[2])])
-
-    xs, hist = levenberg_marquardt(lambda x: correction(Cp, unpack(x)) - C, x0)
-    k = unpack(xs)
-    for h in hist:
-        h["k"] = unpack(np.array(h["x"])).tolist()
-    return k, hist
+    return math.exp(th[0]), math.exp(th[1]), hist, {"A": float(lin[0]), "B": float(lin[1])}
 
 
 def fit_model(I, P, C, cfg):
     A, B, hist_ab, lin = fit_AB(I, P, C, cfg)
-    Cp = c_physics(I, P, A, B, cfg)
-    k, hist_k = fit_correction(Cp, C)
-    return {"A": A, "B": B, "k": k, "hist_ab": hist_ab, "hist_k": hist_k, "lin": lin}
+    corr = fit_correction(c_physics(I, P, A, B, cfg), C)
+    return {"A": A, "B": B, "corr": corr, "hist_ab": hist_ab, "lin": lin}
 
 
 def predict(I, P, model, cfg):
     Cp = c_physics(I, P, model["A"], model["B"], cfg)
-    return Cp, correction(Cp, model["k"])
+    return Cp, correction(Cp, model["corr"])
+
+
+def find_outliers(I, P, C, cfg):
+    """Robust screening: fit, measure each reading's error, and drop readings whose error is more than
+    outlier_z robust standard deviations (1.4826 * median absolute deviation) from the median.
+    Repeat until the set stops changing."""
+    used = np.ones(len(C), bool)
+    if not cfg["exclude_outliers"]:
+        return used, 0.0
+    scale = 0.0
+    for _ in range(10):
+        m = fit_model(I[used], P[used], C[used], cfg)
+        res = predict(I, P, m, cfg)[1] - C
+        med = np.median(res[used])
+        scale = 1.4826 * np.median(np.abs(res[used] - med))
+        new = np.abs(res - med) <= cfg["outlier_z"] * scale
+        if np.array_equal(new, used):
+            break
+        used = new
+    return used, float(scale)
 
 
 def parameter_statistics(I, P, C, A, B, cfg):
@@ -282,77 +354,94 @@ def parameter_statistics(I, P, C, A, B, cfg):
     u = A * p + B * q
     J = np.column_stack([100 * np.exp(-u) * p, 100 * np.exp(-u) * q])
     r = 100 * (1 - np.exp(-u)) - C
-    dof = max(len(C) - 2, 1)
-    s2 = float(r @ r) / dof
-    JTJ = J.T @ J
-    cov = s2 * np.linalg.inv(JTJ)
+    s2 = float(r @ r) / max(len(C) - 2, 1)
+    cov = s2 * np.linalg.inv(J.T @ J)
     se = np.sqrt(np.diag(cov))
-    corr = float(cov[0, 1] / (se[0] * se[1]))
-    Js = J * np.array([A, B])            # scale-free Jacobian, for the condition number
-    cond = float(np.linalg.cond(Js.T @ Js))
-    return {"se_A": float(se[0]), "se_B": float(se[1]), "corr_AB": corr, "cond": cond,
+    Js = J * np.array([A, B])
+    return {"se_A": float(se[0]), "se_B": float(se[1]), "corr_AB": float(cov[0, 1] / (se[0] * se[1])),
+            "cond": float(np.linalg.cond(Js.T @ Js)),
             "ci_A": [A - 1.96 * se[0], A + 1.96 * se[0]], "ci_B": [B - 1.96 * se[1], B + 1.96 * se[1]]}
 
 
+def clean_config(cfg):
+    out = {**DEFAULT_CONFIG, **{k: float(v) for k, v in (cfg or {}).items() if k in DEFAULT_CONFIG}}
+    bad = [k for k, v in out.items() if (v < 0 if k in NONNEG_KEYS else v <= 0)]
+    if bad:
+        raise ValueError(f"these parameters must be > 0: {', '.join(bad)}")
+    return out
+
+
 def calibrate(cfg):
-    cfg = {**DEFAULT_CONFIG, **{k: float(v) for k, v in cfg.items() if k in DEFAULT_CONFIG}}
+    cfg = clean_config(cfg)
     I, P, C = OBS_I, OBS_P, OBS_C
-    model = fit_model(I, P, C, cfg)
-    A, B, k = model["A"], model["B"], model["k"]
+    used, scale = find_outliers(I, P, C, cfg)
+    Iu, Pu, Cu = I[used], P[used], C[used]
+
+    model = fit_model(Iu, Pu, Cu, cfg)
+    A, B, corr = model["A"], model["B"], model["corr"]
     C_th = c_physics(I, P, 1.0, 1.0, cfg)
     Cp, Cc = predict(I, P, model, cfg)
 
-    # Validation 1: hold out every 4th pressure row (spread across the whole range)
+    # Validation 1: hold out every 4th pressure row
     test_rows = np.arange(len(P_ROWS))[1::4]
     te = np.isin(OBS_ROW, test_rows)
-    tr = ~te
-    m_tr = fit_model(I[tr], P[tr], C[tr], cfg)
+    tr_u, te_u = used & ~te, used & te
+    m_tr = fit_model(I[tr_u], P[tr_u], C[tr_u], cfg)
     vp, vc = predict(I, P, m_tr, cfg)
     holdout = {
         "test_pressures": P_ROWS[test_rows].tolist(),
-        "A": m_tr["A"], "B": m_tr["B"], "k": m_tr["k"].tolist(),
-        "physics": {"train": metrics(vp[tr], C[tr]), "test": metrics(vp[te], C[te])},
-        "corrected": {"train": metrics(vc[tr], C[tr]), "test": metrics(vc[te], C[te])},
+        "physics": {"train": metrics(vp[tr_u], C[tr_u]), "test": metrics(vp[te_u], C[te_u])},
+        "corrected": {"train": metrics(vc[tr_u], C[tr_u]), "test": metrics(vc[te_u], C[te_u])},
     }
     # Validation 2: leave-one-pressure-out cross validation
-    lp, lc = np.empty_like(C), np.empty_like(C)
+    lp, lc = np.full_like(C, np.nan), np.full_like(C, np.nan)
     for r in range(len(P_ROWS)):
         m = OBS_ROW == r
-        mm = fit_model(I[~m], P[~m], C[~m], cfg)
+        mm = fit_model(I[used & ~m], P[used & ~m], C[used & ~m], cfg)
         lp[m], lc[m] = predict(I[m], P[m], mm, cfg)
-    lopo = {"physics": metrics(lp, C), "corrected": metrics(lc, C)}
+    lopo = {"physics": metrics(lp[used], Cu), "corrected": metrics(lc[used], Cu)}
 
-    # Loss landscape over (A, B), covering the theory point, the linear estimate and the optimum
+    # Loss landscape over (A, B)
     pts_A = [A, 1.0, model["lin"]["A"]] + [h["A"] for h in model["hist_ab"]]
     pts_B = [B, 1.0, model["lin"]["B"]] + [h["B"] for h in model["hist_ab"]]
     gA = np.logspace(math.log10(min(pts_A) / 2.5), math.log10(max(pts_A) * 2.5), 56)
     gB = np.logspace(math.log10(min(pts_B) / 2.5), math.log10(max(pts_B) * 2.5), 56)
-    p_, q_ = basis(I, P, cfg)
+    p_, q_ = basis(Iu, Pu, cfg)
     U = gA[:, None, None] * p_[None, None, :] + gB[None, :, None] * q_[None, None, :]
-    L = np.sum((100 * (1 - np.exp(-U)) - C) ** 2, axis=2)       # L[iA, iB]
+    L = np.sum((100 * (1 - np.exp(-U)) - Cu) ** 2, axis=2)
 
     # Smooth curves for the charts
     Pg = np.linspace(P_ROWS.min() * 0.9, P_ROWS.max() * 1.05, 120)
-    Dk = knudsen_D(cfg)
-    Db = bulk_D(Pg, cfg)
+    Dk, Db = knudsen_D(cfg), bulk_D(Pg, cfg)
     curves = {"P": Pg.tolist(), "physics": {}, "corrected": {}}
     for c in LEVELS:
         curves["physics"][f"{c:g}"] = current_physics(c, Pg, A, B, cfg).tolist()
-        curves["corrected"][f"{c:g}"] = current_physics(correction_inverse(c, k), Pg, A, B, cfg).tolist()
-    cp_grid = np.linspace(0, max(60.0, float(Cp.max()) * 1.2), 200)
+        cpi = float(correction_inverse(c, corr))
+        inside = np.isfinite(cpi) and corr["lo"] - 1 <= cpi <= corr["hi"] + 1     # skip extrapolated levels
+        curves["corrected"][f"{c:g}"] = (current_physics(cpi, Pg, A, B, cfg) if inside else np.full_like(Pg, np.nan)).tolist()
+    cp_grid = np.linspace(0, 100, 301)
+    nan2none = lambda a: [None if not np.isfinite(v) else float(v) for v in np.asarray(a, float)]
+    for d in (curves["physics"], curves["corrected"]):
+        for key in d:
+            d[key] = nan2none(d[key])
 
     return {
         "config": cfg, "source": DATA_SOURCE, "levels": LEVELS.tolist(),
-        "data": {"P": P_ROWS.tolist(), "I": I_TABLE.tolist()},
+        "data": {"P": P_ROWS.tolist(), "I": [nan2none(r) for r in I_TABLE]},
         "obs": {"P": P.tolist(), "I": I.tolist(), "C": C.tolist(), "row": OBS_ROW.tolist(),
                 "C_theory": C_th.tolist(), "C_phys": Cp.tolist(), "C_corr": Cc.tolist(),
-                "C_lopo_phys": lp.tolist(), "C_lopo_corr": lc.tolist(), "test": te.tolist()},
+                "C_lopo_phys": nan2none(lp), "C_lopo_corr": nan2none(lc),
+                "test": te.tolist(), "used": used.tolist()},
+        "outliers": {"enabled": bool(cfg["exclude_outliers"]), "z": cfg["outlier_z"], "scale": scale,
+                     "n_excluded": int((~used).sum()), "n_used": int(used.sum()),
+                     "by_level": {f"{c:g}": int(np.sum(~used & (C == c))) for c in LEVELS}},
         "Dk": Dk,
-        "theory": {"A": 1.0, "B": 1.0, "metrics": metrics(C_th, C)},
-        "physics": {"A": A, "B": B, "metrics": metrics(Cp, C), "lin": model["lin"],
-                    "history": model["hist_ab"], **parameter_statistics(I, P, C, A, B, cfg)},
-        "corrected": {"k": k.tolist(), "metrics": metrics(Cc, C), "history": model["hist_k"],
-                      "curve": {"x": cp_grid.tolist(), "y": correction(cp_grid, k).tolist()}},
+        "theory": {"A": 1.0, "B": 1.0, "metrics": metrics(C_th[used], Cu)},
+        "physics": {"A": A, "B": B, "metrics": metrics(Cp[used], Cu), "lin": model["lin"],
+                    "history": model["hist_ab"], **parameter_statistics(Iu, Pu, Cu, A, B, cfg)},
+        "corrected": {"k": corr["k"], "lo": corr["lo"], "hi": corr["hi"], "degree": corr["degree"],
+                      "metrics": metrics(Cc[used], Cu),
+                      "curve": {"x": cp_grid.tolist(), "y": correction(cp_grid, corr).tolist()}},
         "holdout": holdout, "lopo": lopo,
         "landscape": {"A": gA.tolist(), "B": gB.tolist(), "logloss": np.log10(L).tolist()},
         "curves": curves,
@@ -361,28 +450,30 @@ def calibrate(cfg):
                       "Deff": (1 / (A / Dk + B / Db)).tolist(),
                       "knudsen_share": (100 * (A / Dk) / (A / Dk + B / Db)).tolist()},
         "ranges": {"P": [float(P.min()), float(P.max())], "I": [float(I.min()), float(I.max())],
-                   "C_phys": [float(Cp.min()), float(Cp.max())], "C": [float(C.min()), float(C.max())]},
+                   "C_phys": [corr["lo"], corr["hi"]], "C": [float(Cu.min()), float(Cu.max())]},
     }
 
 
 STATE = {"cfg": dict(DEFAULT_CONFIG)}
 STATE["result"] = calibrate(STATE["cfg"])
 _r = STATE["result"]
-print("Theory  (A=B=1)      :", {k: round(v, 3) for k, v in _r["theory"]["metrics"].items() if k != "per_level"})
+_short = lambda m: {k: round(v, 3) for k, v in m.items() if k not in ("per_level",)}
+print(f"Outlier screening: {_r['outliers']['n_excluded']} of {len(OBS_C)} readings excluded {_r['outliers']['by_level']}")
+print("Theory  (A=B=1)      :", _short(_r["theory"]["metrics"]))
 print(f"Physics fit A={_r['physics']['A']:.5g}  B={_r['physics']['B']:.5g}  corr(A,B)={_r['physics']['corr_AB']:.3f}")
-print("  metrics            :", {k: round(v, 3) for k, v in _r["physics"]["metrics"].items() if k != "per_level"})
-print("Correction k0,k1,k2  :", [round(v, 5) for v in _r["corrected"]["k"]])
-print("  metrics            :", {k: round(v, 3) for k, v in _r["corrected"]["metrics"].items() if k != "per_level"})
+print("  metrics            :", _short(_r["physics"]["metrics"]))
+print("Correction k0..k3    :", [float(f"{v:.5g}") for v in _r["corrected"]["k"]], "degree", _r["corrected"]["degree"])
+print("  metrics            :", _short(_r["corrected"]["metrics"]))
 print(f"Leave-one-pressure-out RMSE: physics {_r['lopo']['physics']['RMSE']:.3f}  corrected {_r['lopo']['corrected']['RMSE']:.3f}")
 
-
 # %%
-# ---------- Prediction (stage 2: only P and I are needed) ----------
+# ---------- Prediction (only P and I are needed) ----------
 def predict_point(P, I, state=STATE):
     res, cfg = state["result"], state["cfg"]
-    A, B, k = res["physics"]["A"], res["physics"]["B"], np.array(res["corrected"]["k"])
+    A, B = res["physics"]["A"], res["physics"]["B"]
+    corr = {"k": res["corrected"]["k"], "lo": res["corrected"]["lo"], "hi": res["corrected"]["hi"]}
     Cp = float(c_physics(I, P, A, B, cfg))
-    Cc = float(correction(Cp, k))
+    Cc = float(correction(Cp, corr))
     Dk, Db = knudsen_D(cfg), float(bulk_D(P, cfg))
     rng = res["ranges"]
     warnings = []
@@ -391,25 +482,27 @@ def predict_point(P, I, state=STATE):
     if not rng["C_phys"][0] - 1 <= Cp <= rng["C_phys"][1] + 1:
         warnings.append(f"This (P, I) reading is outside the calibrated band (physics output {Cp:.1f} %), so the result "
                         f"is an extrapolation. The model was calibrated for {rng['C'][0]:g} to {rng['C'][1]:g} % O2")
-    Ig = np.linspace(0, max(rng["I"][1] * 1.25, I * 1.1), 160)
+    Ig = np.linspace(0, max(rng["I"][1] * 1.15, I * 1.1), 200)
+    cpg = c_physics(Ig, P, A, B, cfg)
     return {
         "P": P, "I": I, "C_phys": Cp, "C_corr": Cc, "C_theory": float(c_physics(I, P, 1, 1, cfg)),
         "Dk": Dk, "Db": Db, "Deff": 1 / (A / Dk + B / Db),
         "knudsen_share": 100 * (A / Dk) / (A / Dk + B / Db),
         "u": float(-math.log(max(1 - Cp / 100, 1e-300))),
         "warnings": warnings,
-        "curve": {"I": Ig.tolist(), "phys": c_physics(Ig, P, A, B, cfg).tolist(),
-                  "corr": correction(c_physics(Ig, P, A, B, cfg), k).tolist(),
+        "curve": {"I": Ig.tolist(), "phys": cpg.tolist(), "corr": correction(cpg, corr).tolist(),
                   "theory": c_physics(Ig, P, 1.0, 1.0, cfg).tolist()},
     }
 
 
-print("Example: P=56.89, I=8.082 ->", {k: round(v, 3) for k, v in predict_point(56.89, 8.082).items()
-                                       if k in ("C_theory", "C_phys", "C_corr")})
-
+if True:
+    print("Example: P=56.89, I=8.082 ->", {k: round(v, 3) for k, v in predict_point(56.89, 8.082).items()
+                                           if k in ("C_theory", "C_phys", "C_corr")})
 
 # %%
 # ---------- Flask app ----------
+import threading
+from flask import Flask, Response, jsonify, request
 app = Flask(__name__)
 
 
@@ -439,9 +532,7 @@ def api_predict():
 def api_calibrate():
     body = request.get_json(silent=True) or {}
     try:
-        cfg = {**DEFAULT_CONFIG, **{k: float(v) for k, v in body.items() if k in DEFAULT_CONFIG}}
-        if any(cfg[k] <= 0 for k in cfg):
-            raise ValueError("all parameters must be > 0")
+        cfg = clean_config(body)
         result = calibrate(cfg)
     except (ValueError, np.linalg.LinAlgError, OverflowError) as exc:
         return jsonify({"error": f"Calibration failed: {exc}"}), 400
@@ -454,7 +545,6 @@ def api_reset():
     STATE["cfg"] = dict(DEFAULT_CONFIG)
     STATE["result"] = calibrate(STATE["cfg"])
     return jsonify(STATE["result"])
-
 
 # %%
 INDEX_HTML = r"""<!DOCTYPE html>
@@ -596,9 +686,17 @@ footer{max-width:1240px;margin:0 auto;padding:24px;color:var(--muted);font-size:
 "use strict";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
-const LV_COLOR = {"21":"var(--c21)","30":"var(--c30)","35":"var(--c35)","40":"var(--c40)"};
-const LV_HEX = {"21":"#256abf","30":"#3987e5","35":"#6da7ec","40":"#b7d3f6"};
-const LV_SHAPE = {"21":"circle","30":"square","35":"triangle","40":"diamond"};
+// Concentration is ordinal, so levels get one blue hue from dark (low %) to light (high %),
+// plus a repeating marker shape as a second cue. Built from the levels in the data.
+let LV_HEX = {}, LV_SHAPE = {};
+const LV_STOPS = ["#256abf","#3987e5","#6da7ec","#9ec5f4","#cde2fb"];
+function setupLevels(levels){
+  LV_HEX = {}; LV_SHAPE = {};
+  const shapes = ["circle","square","triangle","diamond"], n = levels.length;
+  levels.forEach((c,i) => { const t = n > 1 ? i/(n-1) : 0, s = t*(LV_STOPS.length-1), j = Math.min(Math.floor(s), LV_STOPS.length-2);
+    LV_HEX[String(c)] = lerpHex(LV_STOPS[j], LV_STOPS[j+1], s-j); LV_SHAPE[String(c)] = shapes[i % 4]; });
+}
+const EXCL = "#8a8a8a";
 const COL = {phys:"#d95926", corr:"#ededed", theory:"#6e6e6e", kn:"#3987e5", bk:"#199e70"};
 let R = null, PRED = null, MODEL = "corr";
 
@@ -641,7 +739,7 @@ function legendHTML(items){
   return `<div class="legend">${items.map(s => {
     const sym = s.type === "line"
       ? `<svg viewBox="0 0 18 12"><line x1="1" y1="6" x2="17" y2="6" stroke="${s.color}" stroke-width="2" ${s.dash?`stroke-dasharray="${s.dash}"`:""} stroke-linecap="round"/></svg>`
-      : `<svg viewBox="0 0 18 12"><path d="${shapePath(s.shape||"circle",9,6,4)}" fill="${s.color}"/></svg>`;
+      : `<svg viewBox="0 0 18 12"><path d="${shapePath(s.shape||"circle",9,6,4)}" ${s.hollow?`fill="none" stroke="${s.color}" stroke-width="1.5"`:`fill="${s.color}"`}/></svg>`;
     return `<span>${sym}${esc(s.name)}</span>`;
   }).join("")}</div>`;
 }
@@ -652,7 +750,7 @@ function plot(el, o){
   const m = {l:o.y.log ? 64 : 56, r:16, t:10, b:42};
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
   const all = [];
-  for (const s of o.series) if (!s.noExtent) for (const p of s.pts) if (isFinite(p[0]) && isFinite(p[1])) all.push(p);
+  for (const s of o.series) if (!s.noExtent) for (const p of s.pts) if (Number.isFinite(p[0]) && Number.isFinite(p[1])) all.push(p);
   const ext = (k, ax) => {
     let lo = ax.min ?? Math.min(...all.map(p=>p[k])), hi = ax.max ?? Math.max(...all.map(p=>p[k]));
     if (!ax.log && ax.min === undefined && ax.max === undefined){ const pad=(hi-lo)*0.06||1; lo-=pad; hi+=pad; }
@@ -685,15 +783,17 @@ function plot(el, o){
   for (const s of o.series.filter(s=>s.type==="line")){
     let d = "", pen = false;
     for (const p of s.pts){
-      if (!isFinite(p[0])||!isFinite(p[1])||(o.y.log&&p[1]<=0)){ pen=false; continue; }
+      if (!Number.isFinite(p[0])||!Number.isFinite(p[1])||(o.y.log&&p[1]<=0)){ pen=false; continue; }
       d += (pen?"L":"M") + X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1); pen = true;
     }
     body += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width||2}" stroke-linejoin="round" stroke-linecap="round" ${s.dash?`stroke-dasharray="${s.dash}"`:""} ${s.opacity?`stroke-opacity="${s.opacity}"`:""}/>`;
   }
   for (const s of o.series.filter(s=>s.type!=="line")){
     for (const p of s.pts){
-      if (!isFinite(p[0])||!isFinite(p[1])) continue;
-      body += `<path d="${shapePath(s.shape||"circle", X(p[0]), Y(p[1]), s.r||4)}" fill="${s.color}" stroke="var(--surface)" stroke-width="1.5" ${s.opacity?`fill-opacity="${s.opacity}"`:""}/>`;
+      if (!Number.isFinite(p[0])||!Number.isFinite(p[1])) continue;
+      body += s.hollow
+        ? `<path d="${shapePath(s.shape||"circle", X(p[0]), Y(p[1]), s.r||4)}" fill="none" stroke="${s.color}" stroke-width="1.5"/>`
+        : `<path d="${shapePath(s.shape||"circle", X(p[0]), Y(p[1]), s.r||4)}" fill="${s.color}" stroke="var(--surface)" stroke-width="1.5" ${s.opacity?`fill-opacity="${s.opacity}"`:""}/>`;
     }
   }
   if (o.marker){
@@ -713,7 +813,7 @@ function plot(el, o){
   const svg = el.querySelector("svg"), tip = el.querySelector(".tip"), hl = el.querySelector(".hl");
   const pts = [];
   for (const s of o.series){ if (s.noHover) continue;
-    for (const p of s.pts) if (isFinite(p[0])&&isFinite(p[1])) pts.push({px:X(p[0]),py:Y(p[1]),p,s}); }
+    for (const p of s.pts) if (Number.isFinite(p[0])&&Number.isFinite(p[1])) pts.push({px:X(p[0]),py:Y(p[1]),p,s}); }
   svg.addEventListener("mousemove", ev => {
     const r = svg.getBoundingClientRect(), k = W / r.width;
     const mx = (ev.clientX - r.left)*k, my = (ev.clientY - r.top)*k;
@@ -824,10 +924,15 @@ let rsz; window.addEventListener("resize", () => { clearTimeout(rsz); rsz = setT
 function card(id, title, desc, h){ return `<div class="card"><div class="card-h"><h3>${title}</h3></div><p class="desc">${desc}</p><div id="${id}" style="min-height:${h||280}px"></div></div>`; }
 
 function render(){
-  const r = R, ph = r.physics, co = r.corrected, th = r.theory, k = co.k, cfg = r.config;
+  const r = R, ph = r.physics, co = r.corrected, th = r.theory, k = co.k, cfg = r.config, ol = r.outliers;
+  setupLevels(r.levels);
+  const lvTxt = `${r.levels[0]}–${r.levels[r.levels.length-1]} %`;
+  const sgn = v => v < 0 ? "− " + fmt(-v,4) : "+ " + fmt(v,4);
+  const corrEq = `${fmt(k[0],4)} ${sgn(k[1])}·Cp ${sgn(k[2])}·Cp² ${sgn(k[3])}·Cp³`;
+  const exclTxt = Object.entries(ol.by_level).filter(([c,n])=>n>0).map(([c,n])=>`${n} at ${c} %`).join(", ");
   const pct = (a,b) => (100*(1-b/a)).toFixed(0);
   $("#status").innerHTML = `<i></i>Calibrated · RMSE ${fx(co.metrics.RMSE,2)} %`;
-  const opts = r.obs.P.map((p,i)=>`<option value="${i}">P ${p} · I ${r.obs.I[i]} µA · actual ${r.obs.C[i]} %</option>`).join("");
+  const opts = r.obs.P.map((p,i)=>`<option value="${i}">P ${p} · I ${r.obs.I[i]} µA · actual ${r.obs.C[i]} %${r.obs.used[i]?"":" (excluded)"}</option>`).join("");
   const worst = Object.entries(ph.metrics.per_level).sort((a,b)=>b[1]-a[1])[0];
   $("#app").innerHTML = `
   <section id="predict">
@@ -860,26 +965,28 @@ function render(){
     </div>
     <div class="grid g2" style="margin-top:16px">
       ${card("chPredCurve","Concentration vs current at this pressure","Every model's C(I) curve at the entered pressure. The ring marks your reading. The shaded band is the calibrated range, and the dotted part of the white curve is extrapolation outside it.")}
-      ${card("chMap","Where the reading sits on the calibration map","Measured calibration currents (points) and the calibrated iso-concentration curves (lines). Your reading is the ring.")}
+      ${card("chMap","Where the reading sits on the calibration map","Measured calibration currents (points) and the calibrated iso-concentration curves (lines). Levels where the correction would extrapolate have no line. Your reading is the ring.")}
     </div>
   </section>
 
   <section id="calibration">
     <p class="eyebrow">Stage 1 · Calibration</p>
     <h2>Optimized coefficients</h2>
-    <p class="lead">Fitted on all ${r.obs.C.length} observations (${r.data.P.length} pressures × 4 concentrations). Data: <code>${esc(r.source)}</code></p>
+    <p class="lead">${r.data.P.length} pressures × ${r.levels.length} concentrations (${lvTxt}) = ${r.obs.C.length} readings.
+      ${ol.enabled ? `The outlier screen left out <b style="color:var(--text)">${ol.n_excluded}</b> readings (${exclTxt || "none"}), so the fit uses ${ol.n_used}. Excluded points are drawn as hollow grey markers.` : "Every reading is used (outlier screen off)."}
+      Data: <code>${esc(r.source)}</code></p>
     <div class="tiles">
       <div class="tile"><div class="t">A · Knudsen correction</div><div class="v">${fmt(ph.A,4)}</div><div class="s">± ${fmt(ph.se_A,3)} (1σ)</div></div>
       <div class="tile"><div class="t">B · bulk correction</div><div class="v">${fmt(ph.B,4)}</div><div class="s">± ${fmt(ph.se_B,3)} (1σ)</div></div>
-      <div class="tile"><div class="t">Correction k₀ · k₁ · k₂</div><div class="v" style="font-size:16px;margin-top:10px;font-family:var(--mono)">${fx(k[0],2)} · ${fx(k[1],3)} · ${fx(k[2],4)}</div><div class="s">k₀ + k₁·e^(k₂·C_phys)</div></div>
+      <div class="tile"><div class="t">Correction k₀ · k₁ · k₂ · k₃</div><div class="v" style="font-size:14px;margin-top:10px;font-family:var(--mono)">${fmt(k[0],3)} · ${fmt(k[1],3)}<br>${fmt(k[2],3)} · ${fmt(k[3],3)}</div><div class="s">cubic in C_phys</div></div>
       <div class="tile"><div class="t">RMSE · theory A=B=1</div><div class="v">${fx(th.metrics.RMSE,2)} %</div><div class="s">R² ${fx(th.metrics.R2,3)}</div></div>
       <div class="tile"><div class="t">RMSE · physics fit</div><div class="v">${fx(ph.metrics.RMSE,2)} %</div><div class="s">R² ${fx(ph.metrics.R2,3)} · −${pct(th.metrics.RMSE,ph.metrics.RMSE)}%</div></div>
       <div class="tile"><div class="t">RMSE · physics + correction</div><div class="v">${fx(co.metrics.RMSE,2)} %</div><div class="s">R² ${fx(co.metrics.R2,3)} · −${pct(th.metrics.RMSE,co.metrics.RMSE)}%</div></div>
     </div>
     <div class="grid g2">
       ${card("chParity","Actual vs predicted","Each column is one known concentration, with the models offset slightly so they don't overlap. On the 45° line, the prediction equals the actual value.")}
-      ${card("chLevel","Mean absolute error per concentration","How each model performs at 21, 30, 35 and 40 % O₂.")}
-      ${card("chResPhys","Residuals vs pressure · physics only (A, B)","Predicted − actual. A,B alone cannot match all four concentrations at once: 21 % comes out low and 30–35 % high.")}
+      ${card("chLevel","Mean absolute error per concentration",`How each model performs at each concentration (${lvTxt}). Only readings used in the fit.`)}
+      ${card("chResPhys","Residuals vs pressure · physics only (A, B)","Predicted − actual. A and B alone cannot match every concentration at once: the low concentrations show a clear bias.")}
       ${card("chResCorr","Residuals vs pressure · physics + correction","The same residuals after the correction, on the same y-scale.")}
       ${card("chCorrMap","Result correction: physics output → concentration","x is the concentration predicted by the A,B physics model and y is the true concentration. The white curve is the fitted map, the dashed line is identity.")}
       ${card("chIP","Sensor current vs pressure · data and model","Points are measured. Solid lines are the calibrated model (physics + correction). Dashed lines are physics only.")}
@@ -904,15 +1011,16 @@ function render(){
           <li><b>Identifiability check.</b> From the Jacobian at the optimum: corr(A, B) = ${fx(ph.corr_AB,3)}, condition number ${fmt(ph.cond,3)}.
             ${Math.abs(ph.corr_AB) < 0.95 ? "Both coefficients can be identified separately," : "A and B are strongly correlated,"} because the data spans the pressure range where the Knudsen share of resistance moves from
             ${fx(Math.max(...r.diffusion.knudsen_share),0)} % to ${fx(Math.min(...r.diffusion.knudsen_share),0)} % (see the chart below).</li>
-          <li><b>Why A and B alone are not enough.</b> At a fixed pressure the physics says I ∝ −ln(1 − C/100). The measured currents rise with C on a different curve. The 21 % current is much lower than that law predicts from the 30–40 % readings. No choice of A and B can fix this, because they only rescale the curve per pressure. The largest remaining error is at ${worst[0]} % (MAE ${fx(worst[1],2)} %).</li>
+          <li><b>Why A and B alone are not enough.</b> At a fixed pressure the physics says I ∝ −ln(1 − C/100). The measured currents follow that law well in the middle of the range, but not at every concentration (the 21 % current is lower than the law predicts). A and B only rescale the curve at each pressure, so they cannot bend its shape. The largest remaining error is at ${worst[0]} % (MAE ${fx(worst[1],2)} %).</li>
           <li><b>Correction applied to the result.</b> With A and B fixed, the physics output is mapped through
-            <div class="eq">C = <span class="hl">k₀</span> + <span class="hl">k₁</span>·exp(<span class="hl">k₂</span>·C_phys) &nbsp; = ${fmt(k[0],4)} + ${fmt(k[1],4)}·exp(${fmt(k[2],4)}·C_phys)</div>
-            k₀ is added and k₁ multiplies. k₁, k₂ > 0, so the map is monotonic: a higher current always means a higher concentration. It is fitted with the same LM routine. RMSE drops from ${fx(ph.metrics.RMSE,2)} % to ${fx(co.metrics.RMSE,2)} %.</li>
+            <div class="eq">C = <span class="hl">k₀</span> + <span class="hl">k₁</span>·Cp + <span class="hl">k₂</span>·Cp² + <span class="hl">k₃</span>·Cp³<br>&nbsp; = ${corrEq}</div>
+            Cp is the physics result. The k values are found by ordinary least squares, which has an exact one-step solution. The code checks that the curve only goes up across the calibrated band (Cp ${fx(co.lo,1)}–${fx(co.hi,1)} %); if not, it drops to a quadratic, then a straight line. Outside the band it continues as a straight line, so a higher current always means a higher concentration. Degree used: ${co.degree}. RMSE drops from ${fx(ph.metrics.RMSE,2)} % to ${fx(co.metrics.RMSE,2)} %.</li>
+          <li><b>Outlier screen.</b> ${ol.enabled ? `The model is fitted, and any reading whose error is more than ${fmt(ol.z,2)} robust standard deviations (1.4826 × median absolute deviation = ${fx(ol.scale,2)} %) from the median is left out. This repeats until nothing changes. ${ol.n_excluded} readings were excluded: ${exclTxt || "none"}. You can switch this off in Parameters.` : "Switched off: every reading is used."}</li>
         </ol>
       </div>
       <div class="grid" style="gap:16px">
         ${card("chLand","Loss landscape over A and B","SSE on a log grid of A and B. Orange is the Levenberg–Marquardt path from the theory point (1, 1). The white point is the optimum and the square is the linear OLS start.",320)}
-        ${card("chConv","Convergence","Sum of squared concentration errors at each accepted iteration.",220)}
+        ${card("chConv","Convergence","Stage 1 (A, B): sum of squared concentration errors at each accepted iteration. Stage 2 has an exact one-step solution, so it has no iterations.",220)}
       </div>
     </div>
     <div class="grid g2" style="margin-top:16px">
@@ -922,14 +1030,14 @@ function render(){
     <div class="grid g2" style="margin-top:16px">
       <div><h3 style="margin:0 0 10px">Stage 1 iterations · A, B</h3><div class="tbl" style="max-height:300px"><table>
         <thead><tr><th>Iter</th><th>A</th><th>B</th><th>SSE</th><th>RMSE %</th><th>λ</th></tr></thead>
-        <tbody>${ph.history.map(h=>`<tr><td>${h.it}</td><td>${fmt(h.A,6)}</td><td>${fmt(h.B,6)}</td><td>${fmt(h.loss,5)}</td><td>${fx(Math.sqrt(h.loss/r.obs.C.length),4)}</td><td>${h.lam.toExponential(1)}</td></tr>`).join("")}</tbody></table></div></div>
-      <div><h3 style="margin:0 0 10px">Parameter statistics</h3><div class="tbl"><table>
+        <tbody>${ph.history.map(h=>`<tr><td>${h.it}</td><td>${fmt(h.A,6)}</td><td>${fmt(h.B,6)}</td><td>${fmt(h.loss,5)}</td><td>${fx(Math.sqrt(h.loss/ol.n_used),4)}</td><td>${h.lam.toExponential(1)}</td></tr>`).join("")}</tbody></table></div></div>
+      <div><h3 style="margin:0 0 10px">Parameter statistics</h3><div class="tbl"><table style="font-size:12px">
         <thead><tr><th>Parameter</th><th>Estimate</th><th>Std. error</th><th>95 % CI</th></tr></thead>
         <tbody>
           <tr><td class="l">A (Knudsen)</td><td>${fmt(ph.A,5)}</td><td>${fmt(ph.se_A,4)}</td><td>${fmt(ph.ci_A[0],4)} … ${fmt(ph.ci_A[1],4)}</td></tr>
           <tr><td class="l">B (bulk)</td><td>${fmt(ph.B,5)}</td><td>${fmt(ph.se_B,4)}</td><td>${fmt(ph.ci_B[0],4)} … ${fmt(ph.ci_B[1],4)}</td></tr>
           <tr><td class="l">corr(A, B)</td><td>${fx(ph.corr_AB,4)}</td><td class="dim">—</td><td class="dim">${Math.abs(ph.corr_AB)<0.95?"identifiable":"weakly identifiable"}</td></tr>
-          <tr><td class="l">k₀ · k₁ · k₂</td><td>${fmt(k[0],4)} · ${fmt(k[1],4)} · ${fmt(k[2],4)}</td><td class="dim">—</td><td class="dim">${co.history.length-1} LM iterations</td></tr>
+          <tr><td class="l">k₀ · k₁ · k₂ · k₃</td><td>${k.map(v=>fmt(v,3)).join(" · ")}</td><td class="dim">—</td><td class="dim">deg ${co.degree}</td></tr>
           <tr><td class="l">Dk (constant)</td><td>${fmt(r.Dk,4)}</td><td class="dim">m²/s</td><td class="dim">—</td></tr>
         </tbody></table></div>
         <p class="note">A and B are relative to the geometry in <a href="#parameters">Parameters</a>. If you change a, S or L, A and B rescale to compensate, and the predicted concentrations stay the same. Enter the real sensor specs if you want A and B to have physical meaning.</p></div>
@@ -939,7 +1047,7 @@ function render(){
   <section id="validation">
     <p class="eyebrow">Generalization</p>
     <h2>Validation</h2>
-    <p class="lead">Two checks on data the model did not see. (1) Hold-out: every 4th pressure (${r.holdout.test_pressures.map(v=>fmt(v,2)).join(", ")}) is removed, the model is refitted, and it is tested on those rows. (2) Leave-one-pressure-out: 27 refits, each predicting the pressure it left out.</p>
+    <p class="lead">Two checks on data the model did not see. (1) Hold-out: every 4th pressure (${r.holdout.test_pressures.map(v=>fmt(v,2)).join(", ")}) is removed, the model is refitted, and it is tested on those rows. (2) Leave-one-pressure-out: ${r.data.P.length} refits, each predicting the pressure it left out. Errors are measured on the ${ol.n_used} readings used in the fit.</p>
     <div class="tbl" style="max-height:none"><table>
       <thead><tr><th>Model</th><th>Fit on all · RMSE</th><th>Fit on all · MAE</th><th>Fit on all · R²</th><th>Hold-out train RMSE</th><th>Hold-out test RMSE</th><th>LOPO-CV RMSE</th><th>LOPO-CV MAE</th><th>Max |error|</th></tr></thead>
       <tbody>
@@ -947,7 +1055,7 @@ function render(){
         <tr><td class="l"><span class="sw" style="background:${COL.phys}"></span>Physics fit (A, B)</td><td>${fx(ph.metrics.RMSE,3)}</td><td>${fx(ph.metrics.MAE,3)}</td><td>${fx(ph.metrics.R2,4)}</td><td>${fx(r.holdout.physics.train.RMSE,3)}</td><td>${fx(r.holdout.physics.test.RMSE,3)}</td><td>${fx(r.lopo.physics.RMSE,3)}</td><td>${fx(r.lopo.physics.MAE,3)}</td><td>${fx(ph.metrics.MaxAE,2)}</td></tr>
         <tr><td class="l"><span class="sw" style="background:${COL.corr}"></span>Physics + correction</td><td>${fx(co.metrics.RMSE,3)}</td><td>${fx(co.metrics.MAE,3)}</td><td>${fx(co.metrics.R2,4)}</td><td>${fx(r.holdout.corrected.train.RMSE,3)}</td><td>${fx(r.holdout.corrected.test.RMSE,3)}</td><td>${fx(r.lopo.corrected.RMSE,3)}</td><td>${fx(r.lopo.corrected.MAE,3)}</td><td>${fx(co.metrics.MaxAE,2)}</td></tr>
       </tbody></table></div>
-    <p class="note" style="margin-top:12px">All values are in % O₂. The cross-validated error is close to the fitted error, so the model is not overfitting. An exact 0 error is not possible with this data, because some readings go against the trend. For example, the 21 % current drops from ${r.data.I[5][0]} to ${r.data.I[6][0]} µA as P rises from ${r.data.P[5]} to ${r.data.P[6]}, and the 30 % current drops at P = ${r.data.P[13]}. The spreadsheet notes flag several cells as uncertain transcriptions. Use the model inside the calibrated range: P ${r.ranges.P[0]}–${r.ranges.P[1]} and C ${r.ranges.C[0]}–${r.ranges.C[1]} %.</p>
+    <p class="note" style="margin-top:12px">All values are in % O₂. The cross-validated error is close to the fitted error, so the model is not overfitting. An exact 0 error is not possible with this data, because some readings go against the trend (sudden steps or dips within a column). The spreadsheet notes flag several handwritten values as uncertain, so check them against the original notebook. Use the model inside the calibrated range: P ${r.ranges.P[0]}–${r.ranges.P[1]} and C ${r.ranges.C[0]}–${r.ranges.C[1]} %.</p>
   </section>
 
   <section id="parameters">
@@ -963,18 +1071,19 @@ function render(){
   <section id="data">
     <p class="eyebrow">Table view</p>
     <h2>Experimental data &amp; predictions</h2>
-    <p class="lead">Measured currents and the concentration predicted from each reading, for the physics-only model and for physics + correction. Error is the corrected prediction minus the actual value.</p>
+    <p class="lead">Every reading with its prediction from the physics-only model and from physics + correction. Error is the corrected prediction minus the actual value.</p>
     <div class="tbl"><table>
-      <thead><tr><th>Pressure</th>${r.levels.map(c=>`<th>I @ ${c}% (µA)</th><th>C_phys</th><th>C_final</th><th>Error</th>`).join("")}</tr></thead>
-      <tbody>${r.data.P.map((p,ri)=>`<tr${r.obs.test[ri*4]?' title="hold-out row"':""}><td>${p}${r.obs.test[ri*4]?' <span class="dim">·test</span>':""}</td>${r.levels.map((c,ci)=>{const i=ri*4+ci,e=r.obs.C_corr[i]-c;
-        return `<td>${r.data.I[ri][ci]}</td><td class="dim">${fx(r.obs.C_phys[i],2)}</td><td>${fx(r.obs.C_corr[i],2)}</td><td class="${Math.abs(e)<1?"good":Math.abs(e)>2?"bad":""}">${e>=0?"+":""}${fx(e,2)}</td>`}).join("")}</tr>`).join("")}</tbody>
+      <thead><tr><th>Pressure</th><th>Actual O₂ %</th><th>Current µA</th><th>Theory %</th><th>C_phys %</th><th>C_final %</th><th>Error %</th><th>Status</th></tr></thead>
+      <tbody>${r.obs.P.map((p,i)=>{const e=r.obs.C_corr[i]-r.obs.C[i], u=r.obs.used[i];
+        return `<tr${u?"":' style="opacity:.55"'}><td>${p}${r.obs.test[i]?' <span class="dim">·test</span>':""}</td><td>${r.obs.C[i]}</td><td>${r.obs.I[i]}</td><td class="dim">${fx(r.obs.C_theory[i],2)}</td><td class="dim">${fx(r.obs.C_phys[i],2)}</td><td>${fx(r.obs.C_corr[i],2)}</td><td class="${Math.abs(e)<1?"good":Math.abs(e)>3?"bad":""}">${e>=0?"+":""}${fx(e,2)}</td><td class="l">${u?"used":"excluded"}</td></tr>`}).join("")}</tbody>
     </table></div>
   </section>`;
 
   // parameters form
   const PDEF = [["T","Temperature T","K"],["a","Pore radius a","m"],["S","Cross-section S","m²"],["L","Thickness L","m"],
     ["M","O₂ molar mass M","kg/mol"],["D0","Reference diffusivity D0","m²/s"],["alpha","Temperature exponent α","—"],
-    ["P0","Reference pressure P0","data unit"],["P_to_Pa","Pressure unit → Pa","×"],["I_to_A","Current unit → A","×"]];
+    ["P0","Reference pressure P0","data unit"],["P_to_Pa","Pressure unit → Pa","×"],["I_to_A","Current unit → A","×"],
+    ["exclude_outliers","Exclude outliers (1 = yes, 0 = no)","0/1"],["outlier_z","Outlier cut-off","× MAD"]];
   $("#params").innerHTML = PDEF.map(([k,l,u])=>`<div class="field"><label class="f" for="cfg_${k}">${l}</label><div class="inp"><input id="cfg_${k}" data-k="${k}" type="number" step="any" value="${cfg[k]}"><span class="unit">${u}</span></div></div>`).join("");
   $("#btnCal").onclick = () => recalibrate("/api/calibrate", Object.fromEntries([...document.querySelectorAll("#params input")].map(i=>[i.dataset.k, i.value])));
   $("#btnReset").onclick = () => recalibrate("/api/reset", {});
@@ -994,22 +1103,27 @@ function render(){
 
 function drawCalibrationCharts(){
   const r = R, o = r.obs, L = r.levels.map(String);
-  const byLevel = (fn, extra={}) => L.map(c => ({name:`${c} % O₂`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:4,
-    pts:o.P.map((p,i)=>[i,p]).filter(([i])=>String(o.C[i])===c).map(([i])=>fn(i)), ...extra}));
+  const byLevel = (fn, extra={}) => {
+    const s = L.map(c => ({name:`${c} %`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:3.5,
+      pts:o.P.map((p,i)=>i).filter(i=>String(o.C[i])===c && o.used[i]).map(fn), ...extra}));
+    const ex = o.P.map((p,i)=>i).filter(i=>!o.used[i]);
+    if (ex.length) s.push({name:"excluded", color:EXCL, shape:"circle", hollow:true, type:"scatter", r:4, pts:ex.map(i=>[...fn(i).slice(0,2), ...fn(i).slice(2), `${o.C[i]} % (excluded)`])});
+    return s;
+  };
 
   // parity (models dodged horizontally)
   const dodge = {theory:-0.9, phys:0, corr:0.9};
-  const ser = (key, name, arr, color) => ({name, color, type:"scatter", r:3.5, opacity:.9, pts:o.C.map((c,i)=>[c+dodge[key], arr[i], c, o.P[i], o.I[i]])});
-  plot($("#chParity"), {x:{label:"Actual O₂ (%)", min:17, max:44}, y:{label:"Predicted O₂ (%)"},
+  const ser = (key, name, arr, color) => ({name, color, type:"scatter", r:3, opacity:.9, pts:o.C.map((c,i)=>[c+dodge[key], arr[i], c, o.P[i], o.I[i]]).filter((q,i)=>o.used[i])});
+  plot($("#chParity"), {x:{label:"Actual O₂ (%)", min:r.ranges.C[0]-4, max:r.ranges.C[1]+4}, y:{label:"Predicted O₂ (%)"},
     series:[{name:"45° reference", type:"line", color:"#555", dash:"4 4", width:1.5, noHover:true, noExtent:true, pts:[[0,0],[100,100]]},
       ser("theory","Theory A=B=1",o.C_theory,COL.theory), ser("phys","Physics (A, B)",o.C_phys,COL.phys), ser("corr","Physics + correction",o.C_corr,COL.corr)],
     tip:(p,s)=>[`actual ${p[2]} % · predicted ${fx(p[1],2)} %`, `error ${fx(p[1]-p[2],2)} %`, `P ${p[3]} · I ${p[4]} µA`]});
 
-  bars($("#chLevel"), {xlabel:"Actual O₂ concentration", ylabel:"MAE (% O₂)",
+  bars($("#chLevel"), {xlabel:"Actual O₂ concentration (%)", ylabel:"MAE (% O₂)",
     series:[{name:"Theory A=B=1",color:COL.theory},{name:"Physics (A, B)",color:COL.phys},{name:"Physics + correction",color:COL.corr}],
-    groups:L.map(c=>({label:c+" %", values:[r.theory.metrics.per_level[c], r.physics.metrics.per_level[c], r.corrected.metrics.per_level[c]]}))});
+    groups:L.filter(c=>r.corrected.metrics.per_level[c] !== undefined).map(c=>({label:c, values:[r.theory.metrics.per_level[c], r.physics.metrics.per_level[c], r.corrected.metrics.per_level[c]]}))});
 
-  const allRes = o.C.flatMap((c,i)=>[o.C_phys[i]-c, o.C_corr[i]-c]);
+  const allRes = o.C.flatMap((c,i)=> o.used[i] ? [o.C_phys[i]-c, o.C_corr[i]-c] : []);
   const ylim = Math.ceil(Math.max(...allRes.map(Math.abs))) + 0.5;
   const resTip = (p)=>[`P ${p[0]} · residual ${fx(p[1],3)} %`, `I ${p[2]} µA`];
   const zero = {name:"", type:"line", color:"#555", width:1, noHover:true, noExtent:true, hideLegend:true, pts:[[0,0],[1e4,0]]};
@@ -1020,7 +1134,7 @@ function drawCalibrationCharts(){
 
   plot($("#chCorrMap"), {x:{label:"Physics output C_phys (%)"}, y:{label:"Actual / corrected O₂ (%)"},
     series:[{name:"identity", type:"line", color:"#555", dash:"4 4", width:1.5, noHover:true, noExtent:true, pts:[[0,0],[100,100]]},
-      {name:"fitted map k₀ + k₁·e^(k₂·C_phys)", type:"line", color:COL.corr, pts:r.corrected.curve.x.map((x,i)=>[x, r.corrected.curve.y[i]]).filter(p=>p[0]>=r.ranges.C_phys[0]-4 && p[0]<=r.ranges.C_phys[1]+4)},
+      {name:"fitted cubic map", type:"line", color:COL.corr, pts:r.corrected.curve.x.map((x,i)=>[x, r.corrected.curve.y[i]]).filter(p=>p[0]>=r.ranges.C_phys[0]-4 && p[0]<=r.ranges.C_phys[1]+4)},
       ...byLevel(i=>[o.C_phys[i], o.C[i], o.P[i], o.C_corr[i]])],
     tip:(p,s)=> p.length>2 ? [`C_phys ${fx(p[0],2)} % → corrected ${fx(p[3],2)} %`, `actual ${p[1]} % · P ${p[2]}`] : [`C_phys ${fx(p[0],2)} → ${fx(p[1],2)} %`]});
 
@@ -1039,14 +1153,13 @@ function drawCalibrationCharts(){
       {x:ph.lin.A,y:ph.lin.B,label:"OLS start",fill:"#86b6ef",shape:"square",dy:18},
       {x:ph.A,y:ph.B,label:`A*=${fmt(ph.A,3)}, B*=${fmt(ph.B,3)}`,fill:"#fff",r:5.5, anchor:"end", dx:-10}]});
 
-  const hk = r.corrected.history;
-  const allLoss = [...ph.history.map(h=>h.loss), ...hk.map(h=>h.loss)];
-  plot($("#chConv"), {height:220, x:{label:"Iteration", min:0, max:Math.max(ph.history.length, hk.length)-1, fmt:v=>fmt(v,0)}, y:{label:"SSE (%²)", log:true, min:Math.min(...allLoss)/1.5, max:Math.max(...allLoss)*1.5},
+  const allLoss = ph.history.map(h=>h.loss);
+  plot($("#chConv"), {height:220, x:{label:"Iteration", min:0, max:Math.max(ph.history.length-1, 1), fmt:v=>fmt(v,0)}, y:{label:"SSE (%²)", log:true, min:Math.min(...allLoss, R.corrected.metrics.SSE)/1.5, max:Math.max(...allLoss)*1.5},
     series:[{name:"Stage 1 · A, B", type:"line", color:COL.phys, pts:ph.history.map(h=>[h.it,h.loss])},
       {name:"", type:"scatter", color:COL.phys, r:3.5, hideLegend:true, pts:ph.history.map(h=>[h.it,h.loss])},
-      {name:"Stage 2 · k₀, k₁, k₂", type:"line", color:COL.corr, pts:hk.map(h=>[h.it,h.loss])},
-      {name:"", type:"scatter", color:COL.corr, r:3.5, hideLegend:true, pts:hk.map(h=>[h.it,h.loss])}],
-    tip:(p,s)=>[`iteration ${p[0]}`, `SSE ${fmt(p[1],5)}`, `RMSE ${fx(Math.sqrt(p[1]/R.obs.C.length),3)} %`]});
+      {name:"", type:"line", color:COL.corr, dash:"4 4", width:1.5, noHover:true, hideLegend:true, pts:[[0, R.corrected.metrics.SSE],[Math.max(ph.history.length-1,1), R.corrected.metrics.SSE]]},
+      {name:"Stage 2 result (one step)", type:"scatter", color:COL.corr, r:3.5, pts:[[Math.max(ph.history.length-1,1), R.corrected.metrics.SSE]]}],
+    tip:(p,s)=>[`iteration ${p[0]}`, `SSE ${fmt(p[1],5)}`, `RMSE ${fx(Math.sqrt(p[1]/R.outliers.n_used),3)} %`]});
 
   const d = r.diffusion;
   plot($("#chDiff"), {x:{label:"Pressure"}, y:{label:"Diffusion coefficient (m²/s)", log:true},
@@ -1085,7 +1198,7 @@ function showPrediction(){
   ].map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
 
   const cv = p.curve, inBand = c => c >= r.ranges.C_phys[0]-1 && c <= r.ranges.C_phys[1]+1;
-  plot($("#chPredCurve"), {x:{label:"Sensor current I (µA)", min:0, max:cv.I[cv.I.length-1]}, y:{label:"O₂ concentration (%)", min:0, max:Math.max(60, C*1.15)},
+  plot($("#chPredCurve"), {x:{label:"Sensor current I (µA)", min:0, max:cv.I[cv.I.length-1]}, y:{label:"O₂ concentration (%)", min:0, max:100},
     bands:[{y0:r.ranges.C[0], y1:r.ranges.C[1], label:"calibrated range"}],
     series:[{name:"Theory A=B=1", type:"line", color:COL.theory, dash:"5 4", pts:cv.I.map((x,i)=>[x,cv.theory[i]])},
       {name:"Physics (A, B)", type:"line", color:COL.phys, pts:cv.I.map((x,i)=>[x,cv.phys[i]])},
@@ -1097,8 +1210,9 @@ function showPrediction(){
   const o = r.obs, L = r.levels.map(String), cvv = r.curves;
   plot($("#chMap"), {x:{label:"Pressure"}, y:{label:"Sensor current (µA)"},
     series:[...L.map(c=>({name:`${c} %`, type:"line", color:LV_HEX[c], hideLegend:true, pts:cvv.P.map((pp,i)=>[pp, cvv.corrected[c][i]])})),
-      ...L.map(c=>({name:`${c} % O₂`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:3.5,
-        pts:o.P.map((pp,i)=>[pp,o.I[i],o.C[i]]).filter(q=>String(q[2])===c)}))],
+      ...L.map(c=>({name:`${c} %`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:3,
+        pts:o.P.map((pp,i)=>[pp,o.I[i],o.C[i],o.used[i]]).filter(q=>String(q[2])===c && q[3])})),
+      {name:"excluded", color:EXCL, shape:"circle", hollow:true, type:"scatter", r:3.5, pts:o.P.map((pp,i)=>[pp,o.I[i],o.C[i],o.used[i]]).filter(q=>!q[3])}],
     marker:{x:p.P, y:p.I, label:`your reading · ${fx(C,1)} %`},
     tip:(q,s)=>[`P ${fmt(q[0],4)} · I ${fx(q[1],3)} µA`]});
 }
@@ -1120,7 +1234,6 @@ api("/api/results").then(j => { R = j; render(); }).catch(e => { $("#app").inner
 </html>
 """
 
-
 # %%
 # ---------- Run the server (works inside Jupyter; re-running this cell restarts it) ----------
 HOST, PORT = "127.0.0.1", 5050
@@ -1137,8 +1250,7 @@ def start_server(host=HOST, port=PORT):
     from werkzeug.serving import make_server
     stop_server()
     srv = make_server(host, port, app, threaded=True)
-    th = threading.Thread(target=srv.serve_forever, daemon=True)
-    th.start()
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
     globals()["_SERVER"] = srv
     print(f"Zirconia O2 model UI running at http://{host}:{port}   (call stop_server() to stop)")
     return srv

@@ -1,9 +1,17 @@
 "use strict";
 /* ---------------- helpers ---------------- */
 const $ = s => document.querySelector(s);
-const LV_COLOR = {"21":"var(--c21)","30":"var(--c30)","35":"var(--c35)","40":"var(--c40)"};
-const LV_HEX = {"21":"#256abf","30":"#3987e5","35":"#6da7ec","40":"#b7d3f6"};
-const LV_SHAPE = {"21":"circle","30":"square","35":"triangle","40":"diamond"};
+// Concentration is ordinal, so levels get one blue hue from dark (low %) to light (high %),
+// plus a repeating marker shape as a second cue. Built from the levels in the data.
+let LV_HEX = {}, LV_SHAPE = {};
+const LV_STOPS = ["#256abf","#3987e5","#6da7ec","#9ec5f4","#cde2fb"];
+function setupLevels(levels){
+  LV_HEX = {}; LV_SHAPE = {};
+  const shapes = ["circle","square","triangle","diamond"], n = levels.length;
+  levels.forEach((c,i) => { const t = n > 1 ? i/(n-1) : 0, s = t*(LV_STOPS.length-1), j = Math.min(Math.floor(s), LV_STOPS.length-2);
+    LV_HEX[String(c)] = lerpHex(LV_STOPS[j], LV_STOPS[j+1], s-j); LV_SHAPE[String(c)] = shapes[i % 4]; });
+}
+const EXCL = "#8a8a8a";
 const COL = {phys:"#d95926", corr:"#ededed", theory:"#6e6e6e", kn:"#3987e5", bk:"#199e70"};
 let R = null, PRED = null, MODEL = "corr";
 
@@ -46,7 +54,7 @@ function legendHTML(items){
   return `<div class="legend">${items.map(s => {
     const sym = s.type === "line"
       ? `<svg viewBox="0 0 18 12"><line x1="1" y1="6" x2="17" y2="6" stroke="${s.color}" stroke-width="2" ${s.dash?`stroke-dasharray="${s.dash}"`:""} stroke-linecap="round"/></svg>`
-      : `<svg viewBox="0 0 18 12"><path d="${shapePath(s.shape||"circle",9,6,4)}" fill="${s.color}"/></svg>`;
+      : `<svg viewBox="0 0 18 12"><path d="${shapePath(s.shape||"circle",9,6,4)}" ${s.hollow?`fill="none" stroke="${s.color}" stroke-width="1.5"`:`fill="${s.color}"`}/></svg>`;
     return `<span>${sym}${esc(s.name)}</span>`;
   }).join("")}</div>`;
 }
@@ -57,7 +65,7 @@ function plot(el, o){
   const m = {l:o.y.log ? 64 : 56, r:16, t:10, b:42};
   const iw = W - m.l - m.r, ih = H - m.t - m.b;
   const all = [];
-  for (const s of o.series) if (!s.noExtent) for (const p of s.pts) if (isFinite(p[0]) && isFinite(p[1])) all.push(p);
+  for (const s of o.series) if (!s.noExtent) for (const p of s.pts) if (Number.isFinite(p[0]) && Number.isFinite(p[1])) all.push(p);
   const ext = (k, ax) => {
     let lo = ax.min ?? Math.min(...all.map(p=>p[k])), hi = ax.max ?? Math.max(...all.map(p=>p[k]));
     if (!ax.log && ax.min === undefined && ax.max === undefined){ const pad=(hi-lo)*0.06||1; lo-=pad; hi+=pad; }
@@ -90,15 +98,17 @@ function plot(el, o){
   for (const s of o.series.filter(s=>s.type==="line")){
     let d = "", pen = false;
     for (const p of s.pts){
-      if (!isFinite(p[0])||!isFinite(p[1])||(o.y.log&&p[1]<=0)){ pen=false; continue; }
+      if (!Number.isFinite(p[0])||!Number.isFinite(p[1])||(o.y.log&&p[1]<=0)){ pen=false; continue; }
       d += (pen?"L":"M") + X(p[0]).toFixed(1) + "," + Y(p[1]).toFixed(1); pen = true;
     }
     body += `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="${s.width||2}" stroke-linejoin="round" stroke-linecap="round" ${s.dash?`stroke-dasharray="${s.dash}"`:""} ${s.opacity?`stroke-opacity="${s.opacity}"`:""}/>`;
   }
   for (const s of o.series.filter(s=>s.type!=="line")){
     for (const p of s.pts){
-      if (!isFinite(p[0])||!isFinite(p[1])) continue;
-      body += `<path d="${shapePath(s.shape||"circle", X(p[0]), Y(p[1]), s.r||4)}" fill="${s.color}" stroke="var(--surface)" stroke-width="1.5" ${s.opacity?`fill-opacity="${s.opacity}"`:""}/>`;
+      if (!Number.isFinite(p[0])||!Number.isFinite(p[1])) continue;
+      body += s.hollow
+        ? `<path d="${shapePath(s.shape||"circle", X(p[0]), Y(p[1]), s.r||4)}" fill="none" stroke="${s.color}" stroke-width="1.5"/>`
+        : `<path d="${shapePath(s.shape||"circle", X(p[0]), Y(p[1]), s.r||4)}" fill="${s.color}" stroke="var(--surface)" stroke-width="1.5" ${s.opacity?`fill-opacity="${s.opacity}"`:""}/>`;
     }
   }
   if (o.marker){
@@ -118,7 +128,7 @@ function plot(el, o){
   const svg = el.querySelector("svg"), tip = el.querySelector(".tip"), hl = el.querySelector(".hl");
   const pts = [];
   for (const s of o.series){ if (s.noHover) continue;
-    for (const p of s.pts) if (isFinite(p[0])&&isFinite(p[1])) pts.push({px:X(p[0]),py:Y(p[1]),p,s}); }
+    for (const p of s.pts) if (Number.isFinite(p[0])&&Number.isFinite(p[1])) pts.push({px:X(p[0]),py:Y(p[1]),p,s}); }
   svg.addEventListener("mousemove", ev => {
     const r = svg.getBoundingClientRect(), k = W / r.width;
     const mx = (ev.clientX - r.left)*k, my = (ev.clientY - r.top)*k;
@@ -229,10 +239,15 @@ let rsz; window.addEventListener("resize", () => { clearTimeout(rsz); rsz = setT
 function card(id, title, desc, h){ return `<div class="card"><div class="card-h"><h3>${title}</h3></div><p class="desc">${desc}</p><div id="${id}" style="min-height:${h||280}px"></div></div>`; }
 
 function render(){
-  const r = R, ph = r.physics, co = r.corrected, th = r.theory, k = co.k, cfg = r.config;
+  const r = R, ph = r.physics, co = r.corrected, th = r.theory, k = co.k, cfg = r.config, ol = r.outliers;
+  setupLevels(r.levels);
+  const lvTxt = `${r.levels[0]}–${r.levels[r.levels.length-1]} %`;
+  const sgn = v => v < 0 ? "− " + fmt(-v,4) : "+ " + fmt(v,4);
+  const corrEq = `${fmt(k[0],4)} ${sgn(k[1])}·Cp ${sgn(k[2])}·Cp² ${sgn(k[3])}·Cp³`;
+  const exclTxt = Object.entries(ol.by_level).filter(([c,n])=>n>0).map(([c,n])=>`${n} at ${c} %`).join(", ");
   const pct = (a,b) => (100*(1-b/a)).toFixed(0);
   $("#status").innerHTML = `<i></i>Calibrated · RMSE ${fx(co.metrics.RMSE,2)} %`;
-  const opts = r.obs.P.map((p,i)=>`<option value="${i}">P ${p} · I ${r.obs.I[i]} µA · actual ${r.obs.C[i]} %</option>`).join("");
+  const opts = r.obs.P.map((p,i)=>`<option value="${i}">P ${p} · I ${r.obs.I[i]} µA · actual ${r.obs.C[i]} %${r.obs.used[i]?"":" (excluded)"}</option>`).join("");
   const worst = Object.entries(ph.metrics.per_level).sort((a,b)=>b[1]-a[1])[0];
   $("#app").innerHTML = `
   <section id="predict">
@@ -265,26 +280,28 @@ function render(){
     </div>
     <div class="grid g2" style="margin-top:16px">
       ${card("chPredCurve","Concentration vs current at this pressure","Every model's C(I) curve at the entered pressure. The ring marks your reading. The shaded band is the calibrated range, and the dotted part of the white curve is extrapolation outside it.")}
-      ${card("chMap","Where the reading sits on the calibration map","Measured calibration currents (points) and the calibrated iso-concentration curves (lines). Your reading is the ring.")}
+      ${card("chMap","Where the reading sits on the calibration map","Measured calibration currents (points) and the calibrated iso-concentration curves (lines). Levels where the correction would extrapolate have no line. Your reading is the ring.")}
     </div>
   </section>
 
   <section id="calibration">
     <p class="eyebrow">Stage 1 · Calibration</p>
     <h2>Optimized coefficients</h2>
-    <p class="lead">Fitted on all ${r.obs.C.length} observations (${r.data.P.length} pressures × 4 concentrations). Data: <code>${esc(r.source)}</code></p>
+    <p class="lead">${r.data.P.length} pressures × ${r.levels.length} concentrations (${lvTxt}) = ${r.obs.C.length} readings.
+      ${ol.enabled ? `The outlier screen left out <b style="color:var(--text)">${ol.n_excluded}</b> readings (${exclTxt || "none"}), so the fit uses ${ol.n_used}. Excluded points are drawn as hollow grey markers.` : "Every reading is used (outlier screen off)."}
+      Data: <code>${esc(r.source)}</code></p>
     <div class="tiles">
       <div class="tile"><div class="t">A · Knudsen correction</div><div class="v">${fmt(ph.A,4)}</div><div class="s">± ${fmt(ph.se_A,3)} (1σ)</div></div>
       <div class="tile"><div class="t">B · bulk correction</div><div class="v">${fmt(ph.B,4)}</div><div class="s">± ${fmt(ph.se_B,3)} (1σ)</div></div>
-      <div class="tile"><div class="t">Correction k₀ · k₁ · k₂</div><div class="v" style="font-size:16px;margin-top:10px;font-family:var(--mono)">${fx(k[0],2)} · ${fx(k[1],3)} · ${fx(k[2],4)}</div><div class="s">k₀ + k₁·e^(k₂·C_phys)</div></div>
+      <div class="tile"><div class="t">Correction k₀ · k₁ · k₂ · k₃</div><div class="v" style="font-size:14px;margin-top:10px;font-family:var(--mono)">${fmt(k[0],3)} · ${fmt(k[1],3)}<br>${fmt(k[2],3)} · ${fmt(k[3],3)}</div><div class="s">cubic in C_phys</div></div>
       <div class="tile"><div class="t">RMSE · theory A=B=1</div><div class="v">${fx(th.metrics.RMSE,2)} %</div><div class="s">R² ${fx(th.metrics.R2,3)}</div></div>
       <div class="tile"><div class="t">RMSE · physics fit</div><div class="v">${fx(ph.metrics.RMSE,2)} %</div><div class="s">R² ${fx(ph.metrics.R2,3)} · −${pct(th.metrics.RMSE,ph.metrics.RMSE)}%</div></div>
       <div class="tile"><div class="t">RMSE · physics + correction</div><div class="v">${fx(co.metrics.RMSE,2)} %</div><div class="s">R² ${fx(co.metrics.R2,3)} · −${pct(th.metrics.RMSE,co.metrics.RMSE)}%</div></div>
     </div>
     <div class="grid g2">
       ${card("chParity","Actual vs predicted","Each column is one known concentration, with the models offset slightly so they don't overlap. On the 45° line, the prediction equals the actual value.")}
-      ${card("chLevel","Mean absolute error per concentration","How each model performs at 21, 30, 35 and 40 % O₂.")}
-      ${card("chResPhys","Residuals vs pressure · physics only (A, B)","Predicted − actual. A,B alone cannot match all four concentrations at once: 21 % comes out low and 30–35 % high.")}
+      ${card("chLevel","Mean absolute error per concentration",`How each model performs at each concentration (${lvTxt}). Only readings used in the fit.`)}
+      ${card("chResPhys","Residuals vs pressure · physics only (A, B)","Predicted − actual. A and B alone cannot match every concentration at once: the low concentrations show a clear bias.")}
       ${card("chResCorr","Residuals vs pressure · physics + correction","The same residuals after the correction, on the same y-scale.")}
       ${card("chCorrMap","Result correction: physics output → concentration","x is the concentration predicted by the A,B physics model and y is the true concentration. The white curve is the fitted map, the dashed line is identity.")}
       ${card("chIP","Sensor current vs pressure · data and model","Points are measured. Solid lines are the calibrated model (physics + correction). Dashed lines are physics only.")}
@@ -309,15 +326,16 @@ function render(){
           <li><b>Identifiability check.</b> From the Jacobian at the optimum: corr(A, B) = ${fx(ph.corr_AB,3)}, condition number ${fmt(ph.cond,3)}.
             ${Math.abs(ph.corr_AB) < 0.95 ? "Both coefficients can be identified separately," : "A and B are strongly correlated,"} because the data spans the pressure range where the Knudsen share of resistance moves from
             ${fx(Math.max(...r.diffusion.knudsen_share),0)} % to ${fx(Math.min(...r.diffusion.knudsen_share),0)} % (see the chart below).</li>
-          <li><b>Why A and B alone are not enough.</b> At a fixed pressure the physics says I ∝ −ln(1 − C/100). The measured currents rise with C on a different curve. The 21 % current is much lower than that law predicts from the 30–40 % readings. No choice of A and B can fix this, because they only rescale the curve per pressure. The largest remaining error is at ${worst[0]} % (MAE ${fx(worst[1],2)} %).</li>
+          <li><b>Why A and B alone are not enough.</b> At a fixed pressure the physics says I ∝ −ln(1 − C/100). The measured currents follow that law well in the middle of the range, but not at every concentration (the 21 % current is lower than the law predicts). A and B only rescale the curve at each pressure, so they cannot bend its shape. The largest remaining error is at ${worst[0]} % (MAE ${fx(worst[1],2)} %).</li>
           <li><b>Correction applied to the result.</b> With A and B fixed, the physics output is mapped through
-            <div class="eq">C = <span class="hl">k₀</span> + <span class="hl">k₁</span>·exp(<span class="hl">k₂</span>·C_phys) &nbsp; = ${fmt(k[0],4)} + ${fmt(k[1],4)}·exp(${fmt(k[2],4)}·C_phys)</div>
-            k₀ is added and k₁ multiplies. k₁, k₂ > 0, so the map is monotonic: a higher current always means a higher concentration. It is fitted with the same LM routine. RMSE drops from ${fx(ph.metrics.RMSE,2)} % to ${fx(co.metrics.RMSE,2)} %.</li>
+            <div class="eq">C = <span class="hl">k₀</span> + <span class="hl">k₁</span>·Cp + <span class="hl">k₂</span>·Cp² + <span class="hl">k₃</span>·Cp³<br>&nbsp; = ${corrEq}</div>
+            Cp is the physics result. The k values are found by ordinary least squares, which has an exact one-step solution. The code checks that the curve only goes up across the calibrated band (Cp ${fx(co.lo,1)}–${fx(co.hi,1)} %); if not, it drops to a quadratic, then a straight line. Outside the band it continues as a straight line, so a higher current always means a higher concentration. Degree used: ${co.degree}. RMSE drops from ${fx(ph.metrics.RMSE,2)} % to ${fx(co.metrics.RMSE,2)} %.</li>
+          <li><b>Outlier screen.</b> ${ol.enabled ? `The model is fitted, and any reading whose error is more than ${fmt(ol.z,2)} robust standard deviations (1.4826 × median absolute deviation = ${fx(ol.scale,2)} %) from the median is left out. This repeats until nothing changes. ${ol.n_excluded} readings were excluded: ${exclTxt || "none"}. You can switch this off in Parameters.` : "Switched off: every reading is used."}</li>
         </ol>
       </div>
       <div class="grid" style="gap:16px">
         ${card("chLand","Loss landscape over A and B","SSE on a log grid of A and B. Orange is the Levenberg–Marquardt path from the theory point (1, 1). The white point is the optimum and the square is the linear OLS start.",320)}
-        ${card("chConv","Convergence","Sum of squared concentration errors at each accepted iteration.",220)}
+        ${card("chConv","Convergence","Stage 1 (A, B): sum of squared concentration errors at each accepted iteration. Stage 2 has an exact one-step solution, so it has no iterations.",220)}
       </div>
     </div>
     <div class="grid g2" style="margin-top:16px">
@@ -327,14 +345,14 @@ function render(){
     <div class="grid g2" style="margin-top:16px">
       <div><h3 style="margin:0 0 10px">Stage 1 iterations · A, B</h3><div class="tbl" style="max-height:300px"><table>
         <thead><tr><th>Iter</th><th>A</th><th>B</th><th>SSE</th><th>RMSE %</th><th>λ</th></tr></thead>
-        <tbody>${ph.history.map(h=>`<tr><td>${h.it}</td><td>${fmt(h.A,6)}</td><td>${fmt(h.B,6)}</td><td>${fmt(h.loss,5)}</td><td>${fx(Math.sqrt(h.loss/r.obs.C.length),4)}</td><td>${h.lam.toExponential(1)}</td></tr>`).join("")}</tbody></table></div></div>
-      <div><h3 style="margin:0 0 10px">Parameter statistics</h3><div class="tbl"><table>
+        <tbody>${ph.history.map(h=>`<tr><td>${h.it}</td><td>${fmt(h.A,6)}</td><td>${fmt(h.B,6)}</td><td>${fmt(h.loss,5)}</td><td>${fx(Math.sqrt(h.loss/ol.n_used),4)}</td><td>${h.lam.toExponential(1)}</td></tr>`).join("")}</tbody></table></div></div>
+      <div><h3 style="margin:0 0 10px">Parameter statistics</h3><div class="tbl"><table style="font-size:12px">
         <thead><tr><th>Parameter</th><th>Estimate</th><th>Std. error</th><th>95 % CI</th></tr></thead>
         <tbody>
           <tr><td class="l">A (Knudsen)</td><td>${fmt(ph.A,5)}</td><td>${fmt(ph.se_A,4)}</td><td>${fmt(ph.ci_A[0],4)} … ${fmt(ph.ci_A[1],4)}</td></tr>
           <tr><td class="l">B (bulk)</td><td>${fmt(ph.B,5)}</td><td>${fmt(ph.se_B,4)}</td><td>${fmt(ph.ci_B[0],4)} … ${fmt(ph.ci_B[1],4)}</td></tr>
           <tr><td class="l">corr(A, B)</td><td>${fx(ph.corr_AB,4)}</td><td class="dim">—</td><td class="dim">${Math.abs(ph.corr_AB)<0.95?"identifiable":"weakly identifiable"}</td></tr>
-          <tr><td class="l">k₀ · k₁ · k₂</td><td>${fmt(k[0],4)} · ${fmt(k[1],4)} · ${fmt(k[2],4)}</td><td class="dim">—</td><td class="dim">${co.history.length-1} LM iterations</td></tr>
+          <tr><td class="l">k₀ · k₁ · k₂ · k₃</td><td>${k.map(v=>fmt(v,3)).join(" · ")}</td><td class="dim">—</td><td class="dim">deg ${co.degree}</td></tr>
           <tr><td class="l">Dk (constant)</td><td>${fmt(r.Dk,4)}</td><td class="dim">m²/s</td><td class="dim">—</td></tr>
         </tbody></table></div>
         <p class="note">A and B are relative to the geometry in <a href="#parameters">Parameters</a>. If you change a, S or L, A and B rescale to compensate, and the predicted concentrations stay the same. Enter the real sensor specs if you want A and B to have physical meaning.</p></div>
@@ -344,7 +362,7 @@ function render(){
   <section id="validation">
     <p class="eyebrow">Generalization</p>
     <h2>Validation</h2>
-    <p class="lead">Two checks on data the model did not see. (1) Hold-out: every 4th pressure (${r.holdout.test_pressures.map(v=>fmt(v,2)).join(", ")}) is removed, the model is refitted, and it is tested on those rows. (2) Leave-one-pressure-out: 27 refits, each predicting the pressure it left out.</p>
+    <p class="lead">Two checks on data the model did not see. (1) Hold-out: every 4th pressure (${r.holdout.test_pressures.map(v=>fmt(v,2)).join(", ")}) is removed, the model is refitted, and it is tested on those rows. (2) Leave-one-pressure-out: ${r.data.P.length} refits, each predicting the pressure it left out. Errors are measured on the ${ol.n_used} readings used in the fit.</p>
     <div class="tbl" style="max-height:none"><table>
       <thead><tr><th>Model</th><th>Fit on all · RMSE</th><th>Fit on all · MAE</th><th>Fit on all · R²</th><th>Hold-out train RMSE</th><th>Hold-out test RMSE</th><th>LOPO-CV RMSE</th><th>LOPO-CV MAE</th><th>Max |error|</th></tr></thead>
       <tbody>
@@ -352,7 +370,7 @@ function render(){
         <tr><td class="l"><span class="sw" style="background:${COL.phys}"></span>Physics fit (A, B)</td><td>${fx(ph.metrics.RMSE,3)}</td><td>${fx(ph.metrics.MAE,3)}</td><td>${fx(ph.metrics.R2,4)}</td><td>${fx(r.holdout.physics.train.RMSE,3)}</td><td>${fx(r.holdout.physics.test.RMSE,3)}</td><td>${fx(r.lopo.physics.RMSE,3)}</td><td>${fx(r.lopo.physics.MAE,3)}</td><td>${fx(ph.metrics.MaxAE,2)}</td></tr>
         <tr><td class="l"><span class="sw" style="background:${COL.corr}"></span>Physics + correction</td><td>${fx(co.metrics.RMSE,3)}</td><td>${fx(co.metrics.MAE,3)}</td><td>${fx(co.metrics.R2,4)}</td><td>${fx(r.holdout.corrected.train.RMSE,3)}</td><td>${fx(r.holdout.corrected.test.RMSE,3)}</td><td>${fx(r.lopo.corrected.RMSE,3)}</td><td>${fx(r.lopo.corrected.MAE,3)}</td><td>${fx(co.metrics.MaxAE,2)}</td></tr>
       </tbody></table></div>
-    <p class="note" style="margin-top:12px">All values are in % O₂. The cross-validated error is close to the fitted error, so the model is not overfitting. An exact 0 error is not possible with this data, because some readings go against the trend. For example, the 21 % current drops from ${r.data.I[5][0]} to ${r.data.I[6][0]} µA as P rises from ${r.data.P[5]} to ${r.data.P[6]}, and the 30 % current drops at P = ${r.data.P[13]}. The spreadsheet notes flag several cells as uncertain transcriptions. Use the model inside the calibrated range: P ${r.ranges.P[0]}–${r.ranges.P[1]} and C ${r.ranges.C[0]}–${r.ranges.C[1]} %.</p>
+    <p class="note" style="margin-top:12px">All values are in % O₂. The cross-validated error is close to the fitted error, so the model is not overfitting. An exact 0 error is not possible with this data, because some readings go against the trend (sudden steps or dips within a column). The spreadsheet notes flag several handwritten values as uncertain, so check them against the original notebook. Use the model inside the calibrated range: P ${r.ranges.P[0]}–${r.ranges.P[1]} and C ${r.ranges.C[0]}–${r.ranges.C[1]} %.</p>
   </section>
 
   <section id="parameters">
@@ -368,18 +386,19 @@ function render(){
   <section id="data">
     <p class="eyebrow">Table view</p>
     <h2>Experimental data &amp; predictions</h2>
-    <p class="lead">Measured currents and the concentration predicted from each reading, for the physics-only model and for physics + correction. Error is the corrected prediction minus the actual value.</p>
+    <p class="lead">Every reading with its prediction from the physics-only model and from physics + correction. Error is the corrected prediction minus the actual value.</p>
     <div class="tbl"><table>
-      <thead><tr><th>Pressure</th>${r.levels.map(c=>`<th>I @ ${c}% (µA)</th><th>C_phys</th><th>C_final</th><th>Error</th>`).join("")}</tr></thead>
-      <tbody>${r.data.P.map((p,ri)=>`<tr${r.obs.test[ri*4]?' title="hold-out row"':""}><td>${p}${r.obs.test[ri*4]?' <span class="dim">·test</span>':""}</td>${r.levels.map((c,ci)=>{const i=ri*4+ci,e=r.obs.C_corr[i]-c;
-        return `<td>${r.data.I[ri][ci]}</td><td class="dim">${fx(r.obs.C_phys[i],2)}</td><td>${fx(r.obs.C_corr[i],2)}</td><td class="${Math.abs(e)<1?"good":Math.abs(e)>2?"bad":""}">${e>=0?"+":""}${fx(e,2)}</td>`}).join("")}</tr>`).join("")}</tbody>
+      <thead><tr><th>Pressure</th><th>Actual O₂ %</th><th>Current µA</th><th>Theory %</th><th>C_phys %</th><th>C_final %</th><th>Error %</th><th>Status</th></tr></thead>
+      <tbody>${r.obs.P.map((p,i)=>{const e=r.obs.C_corr[i]-r.obs.C[i], u=r.obs.used[i];
+        return `<tr${u?"":' style="opacity:.55"'}><td>${p}${r.obs.test[i]?' <span class="dim">·test</span>':""}</td><td>${r.obs.C[i]}</td><td>${r.obs.I[i]}</td><td class="dim">${fx(r.obs.C_theory[i],2)}</td><td class="dim">${fx(r.obs.C_phys[i],2)}</td><td>${fx(r.obs.C_corr[i],2)}</td><td class="${Math.abs(e)<1?"good":Math.abs(e)>3?"bad":""}">${e>=0?"+":""}${fx(e,2)}</td><td class="l">${u?"used":"excluded"}</td></tr>`}).join("")}</tbody>
     </table></div>
   </section>`;
 
   // parameters form
   const PDEF = [["T","Temperature T","K"],["a","Pore radius a","m"],["S","Cross-section S","m²"],["L","Thickness L","m"],
     ["M","O₂ molar mass M","kg/mol"],["D0","Reference diffusivity D0","m²/s"],["alpha","Temperature exponent α","—"],
-    ["P0","Reference pressure P0","data unit"],["P_to_Pa","Pressure unit → Pa","×"],["I_to_A","Current unit → A","×"]];
+    ["P0","Reference pressure P0","data unit"],["P_to_Pa","Pressure unit → Pa","×"],["I_to_A","Current unit → A","×"],
+    ["exclude_outliers","Exclude outliers (1 = yes, 0 = no)","0/1"],["outlier_z","Outlier cut-off","× MAD"]];
   $("#params").innerHTML = PDEF.map(([k,l,u])=>`<div class="field"><label class="f" for="cfg_${k}">${l}</label><div class="inp"><input id="cfg_${k}" data-k="${k}" type="number" step="any" value="${cfg[k]}"><span class="unit">${u}</span></div></div>`).join("");
   $("#btnCal").onclick = () => recalibrate("/api/calibrate", Object.fromEntries([...document.querySelectorAll("#params input")].map(i=>[i.dataset.k, i.value])));
   $("#btnReset").onclick = () => recalibrate("/api/reset", {});
@@ -399,22 +418,27 @@ function render(){
 
 function drawCalibrationCharts(){
   const r = R, o = r.obs, L = r.levels.map(String);
-  const byLevel = (fn, extra={}) => L.map(c => ({name:`${c} % O₂`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:4,
-    pts:o.P.map((p,i)=>[i,p]).filter(([i])=>String(o.C[i])===c).map(([i])=>fn(i)), ...extra}));
+  const byLevel = (fn, extra={}) => {
+    const s = L.map(c => ({name:`${c} %`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:3.5,
+      pts:o.P.map((p,i)=>i).filter(i=>String(o.C[i])===c && o.used[i]).map(fn), ...extra}));
+    const ex = o.P.map((p,i)=>i).filter(i=>!o.used[i]);
+    if (ex.length) s.push({name:"excluded", color:EXCL, shape:"circle", hollow:true, type:"scatter", r:4, pts:ex.map(i=>[...fn(i).slice(0,2), ...fn(i).slice(2), `${o.C[i]} % (excluded)`])});
+    return s;
+  };
 
   // parity (models dodged horizontally)
   const dodge = {theory:-0.9, phys:0, corr:0.9};
-  const ser = (key, name, arr, color) => ({name, color, type:"scatter", r:3.5, opacity:.9, pts:o.C.map((c,i)=>[c+dodge[key], arr[i], c, o.P[i], o.I[i]])});
-  plot($("#chParity"), {x:{label:"Actual O₂ (%)", min:17, max:44}, y:{label:"Predicted O₂ (%)"},
+  const ser = (key, name, arr, color) => ({name, color, type:"scatter", r:3, opacity:.9, pts:o.C.map((c,i)=>[c+dodge[key], arr[i], c, o.P[i], o.I[i]]).filter((q,i)=>o.used[i])});
+  plot($("#chParity"), {x:{label:"Actual O₂ (%)", min:r.ranges.C[0]-4, max:r.ranges.C[1]+4}, y:{label:"Predicted O₂ (%)"},
     series:[{name:"45° reference", type:"line", color:"#555", dash:"4 4", width:1.5, noHover:true, noExtent:true, pts:[[0,0],[100,100]]},
       ser("theory","Theory A=B=1",o.C_theory,COL.theory), ser("phys","Physics (A, B)",o.C_phys,COL.phys), ser("corr","Physics + correction",o.C_corr,COL.corr)],
     tip:(p,s)=>[`actual ${p[2]} % · predicted ${fx(p[1],2)} %`, `error ${fx(p[1]-p[2],2)} %`, `P ${p[3]} · I ${p[4]} µA`]});
 
-  bars($("#chLevel"), {xlabel:"Actual O₂ concentration", ylabel:"MAE (% O₂)",
+  bars($("#chLevel"), {xlabel:"Actual O₂ concentration (%)", ylabel:"MAE (% O₂)",
     series:[{name:"Theory A=B=1",color:COL.theory},{name:"Physics (A, B)",color:COL.phys},{name:"Physics + correction",color:COL.corr}],
-    groups:L.map(c=>({label:c+" %", values:[r.theory.metrics.per_level[c], r.physics.metrics.per_level[c], r.corrected.metrics.per_level[c]]}))});
+    groups:L.filter(c=>r.corrected.metrics.per_level[c] !== undefined).map(c=>({label:c, values:[r.theory.metrics.per_level[c], r.physics.metrics.per_level[c], r.corrected.metrics.per_level[c]]}))});
 
-  const allRes = o.C.flatMap((c,i)=>[o.C_phys[i]-c, o.C_corr[i]-c]);
+  const allRes = o.C.flatMap((c,i)=> o.used[i] ? [o.C_phys[i]-c, o.C_corr[i]-c] : []);
   const ylim = Math.ceil(Math.max(...allRes.map(Math.abs))) + 0.5;
   const resTip = (p)=>[`P ${p[0]} · residual ${fx(p[1],3)} %`, `I ${p[2]} µA`];
   const zero = {name:"", type:"line", color:"#555", width:1, noHover:true, noExtent:true, hideLegend:true, pts:[[0,0],[1e4,0]]};
@@ -425,7 +449,7 @@ function drawCalibrationCharts(){
 
   plot($("#chCorrMap"), {x:{label:"Physics output C_phys (%)"}, y:{label:"Actual / corrected O₂ (%)"},
     series:[{name:"identity", type:"line", color:"#555", dash:"4 4", width:1.5, noHover:true, noExtent:true, pts:[[0,0],[100,100]]},
-      {name:"fitted map k₀ + k₁·e^(k₂·C_phys)", type:"line", color:COL.corr, pts:r.corrected.curve.x.map((x,i)=>[x, r.corrected.curve.y[i]]).filter(p=>p[0]>=r.ranges.C_phys[0]-4 && p[0]<=r.ranges.C_phys[1]+4)},
+      {name:"fitted cubic map", type:"line", color:COL.corr, pts:r.corrected.curve.x.map((x,i)=>[x, r.corrected.curve.y[i]]).filter(p=>p[0]>=r.ranges.C_phys[0]-4 && p[0]<=r.ranges.C_phys[1]+4)},
       ...byLevel(i=>[o.C_phys[i], o.C[i], o.P[i], o.C_corr[i]])],
     tip:(p,s)=> p.length>2 ? [`C_phys ${fx(p[0],2)} % → corrected ${fx(p[3],2)} %`, `actual ${p[1]} % · P ${p[2]}`] : [`C_phys ${fx(p[0],2)} → ${fx(p[1],2)} %`]});
 
@@ -444,14 +468,13 @@ function drawCalibrationCharts(){
       {x:ph.lin.A,y:ph.lin.B,label:"OLS start",fill:"#86b6ef",shape:"square",dy:18},
       {x:ph.A,y:ph.B,label:`A*=${fmt(ph.A,3)}, B*=${fmt(ph.B,3)}`,fill:"#fff",r:5.5, anchor:"end", dx:-10}]});
 
-  const hk = r.corrected.history;
-  const allLoss = [...ph.history.map(h=>h.loss), ...hk.map(h=>h.loss)];
-  plot($("#chConv"), {height:220, x:{label:"Iteration", min:0, max:Math.max(ph.history.length, hk.length)-1, fmt:v=>fmt(v,0)}, y:{label:"SSE (%²)", log:true, min:Math.min(...allLoss)/1.5, max:Math.max(...allLoss)*1.5},
+  const allLoss = ph.history.map(h=>h.loss);
+  plot($("#chConv"), {height:220, x:{label:"Iteration", min:0, max:Math.max(ph.history.length-1, 1), fmt:v=>fmt(v,0)}, y:{label:"SSE (%²)", log:true, min:Math.min(...allLoss, R.corrected.metrics.SSE)/1.5, max:Math.max(...allLoss)*1.5},
     series:[{name:"Stage 1 · A, B", type:"line", color:COL.phys, pts:ph.history.map(h=>[h.it,h.loss])},
       {name:"", type:"scatter", color:COL.phys, r:3.5, hideLegend:true, pts:ph.history.map(h=>[h.it,h.loss])},
-      {name:"Stage 2 · k₀, k₁, k₂", type:"line", color:COL.corr, pts:hk.map(h=>[h.it,h.loss])},
-      {name:"", type:"scatter", color:COL.corr, r:3.5, hideLegend:true, pts:hk.map(h=>[h.it,h.loss])}],
-    tip:(p,s)=>[`iteration ${p[0]}`, `SSE ${fmt(p[1],5)}`, `RMSE ${fx(Math.sqrt(p[1]/R.obs.C.length),3)} %`]});
+      {name:"", type:"line", color:COL.corr, dash:"4 4", width:1.5, noHover:true, hideLegend:true, pts:[[0, R.corrected.metrics.SSE],[Math.max(ph.history.length-1,1), R.corrected.metrics.SSE]]},
+      {name:"Stage 2 result (one step)", type:"scatter", color:COL.corr, r:3.5, pts:[[Math.max(ph.history.length-1,1), R.corrected.metrics.SSE]]}],
+    tip:(p,s)=>[`iteration ${p[0]}`, `SSE ${fmt(p[1],5)}`, `RMSE ${fx(Math.sqrt(p[1]/R.outliers.n_used),3)} %`]});
 
   const d = r.diffusion;
   plot($("#chDiff"), {x:{label:"Pressure"}, y:{label:"Diffusion coefficient (m²/s)", log:true},
@@ -490,7 +513,7 @@ function showPrediction(){
   ].map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
 
   const cv = p.curve, inBand = c => c >= r.ranges.C_phys[0]-1 && c <= r.ranges.C_phys[1]+1;
-  plot($("#chPredCurve"), {x:{label:"Sensor current I (µA)", min:0, max:cv.I[cv.I.length-1]}, y:{label:"O₂ concentration (%)", min:0, max:Math.max(60, C*1.15)},
+  plot($("#chPredCurve"), {x:{label:"Sensor current I (µA)", min:0, max:cv.I[cv.I.length-1]}, y:{label:"O₂ concentration (%)", min:0, max:100},
     bands:[{y0:r.ranges.C[0], y1:r.ranges.C[1], label:"calibrated range"}],
     series:[{name:"Theory A=B=1", type:"line", color:COL.theory, dash:"5 4", pts:cv.I.map((x,i)=>[x,cv.theory[i]])},
       {name:"Physics (A, B)", type:"line", color:COL.phys, pts:cv.I.map((x,i)=>[x,cv.phys[i]])},
@@ -502,8 +525,9 @@ function showPrediction(){
   const o = r.obs, L = r.levels.map(String), cvv = r.curves;
   plot($("#chMap"), {x:{label:"Pressure"}, y:{label:"Sensor current (µA)"},
     series:[...L.map(c=>({name:`${c} %`, type:"line", color:LV_HEX[c], hideLegend:true, pts:cvv.P.map((pp,i)=>[pp, cvv.corrected[c][i]])})),
-      ...L.map(c=>({name:`${c} % O₂`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:3.5,
-        pts:o.P.map((pp,i)=>[pp,o.I[i],o.C[i]]).filter(q=>String(q[2])===c)}))],
+      ...L.map(c=>({name:`${c} %`, color:LV_HEX[c], shape:LV_SHAPE[c], type:"scatter", r:3,
+        pts:o.P.map((pp,i)=>[pp,o.I[i],o.C[i],o.used[i]]).filter(q=>String(q[2])===c && q[3])})),
+      {name:"excluded", color:EXCL, shape:"circle", hollow:true, type:"scatter", r:3.5, pts:o.P.map((pp,i)=>[pp,o.I[i],o.C[i],o.used[i]]).filter(q=>!q[3])}],
     marker:{x:p.P, y:p.I, label:`your reading · ${fx(C,1)} %`},
     tip:(q,s)=>[`P ${fmt(q[0],4)} · I ${fx(q[1],3)} µA`]});
 }
