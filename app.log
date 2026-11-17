@@ -12,30 +12,12 @@ Open http://127.0.0.1:5050
 [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on http://127.0.0.1:5050
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [13/Nov/2026 09:07:36] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:07:38] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:07:38] "[36mGET /static/style.css HTTP/1.1[0m" 304 -
-127.0.0.1 - - [13/Nov/2026 09:07:38] "GET /static/app.js HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:07:38] "GET /api/results HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:07:38] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
-127.0.0.1 - - [13/Nov/2026 09:07:38] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:22] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:22] "GET /static/style.css HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:22] "GET /static/app.js HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:22] "GET /api/results HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:22] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:45] "GET /api/predict?P=5&I=8.082 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:46] "GET /api/predict?P=59&I=8.082 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:46] "GET /api/predict?P=595&I=8.082 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:55] "GET /api/predict?P=595&I=8.08 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:55] "GET /api/predict?P=595&I=8 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:55] "GET /api/predict?P=595&I=8 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:56] "GET /api/predict?P=595&I=8 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:57] "GET /api/predict?P=595&I=2 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:57] "GET /api/predict?P=595&I=23 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:57] "GET /api/predict?P=595&I=238 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:58] "GET /api/predict?P=595&I=238 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:58] "GET /api/predict?P=595&I=238.6 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:58] "GET /api/predict?P=595&I=238.64 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:16:59] "GET /api/predict?P=595&I=238.643 HTTP/1.1" 200 -
-127.0.0.1 - - [13/Nov/2026 09:17:11] "GET /api/predict?P=65.71&I=26.9 HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:14:20] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:14:20] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:14:20] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:14:20] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:15:45] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /static/style.css HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /api/results HTTP/1.1" 200 -
+127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
