@@ -12,12 +12,23 @@ Open http://127.0.0.1:5050
 [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
  * Running on http://127.0.0.1:5050
 [33mPress CTRL+C to quit[0m
-127.0.0.1 - - [17/Nov/2026 07:14:20] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:14:20] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:14:20] "GET /static/app.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:14:20] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:15:45] "GET / HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /static/style.css HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /static/app.js HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /api/results HTTP/1.1" 200 -
-127.0.0.1 - - [17/Nov/2026 07:15:45] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:27] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:27] "GET /report HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:27] "GET /report HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:27] "POST /api/calibrate HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:27] "GET /report HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:28] "POST /api/reset HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:30] "GET /report HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:30] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+127.0.0.1 - - [18/Nov/2026 19:42:30] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:30] "[36mGET /static/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [18/Nov/2026 19:42:30] "GET /static/app.js HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:30] "GET /api/results HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:31] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:42:31] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+127.0.0.1 - - [18/Nov/2026 19:43:51] "GET / HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:43:52] "[36mGET /static/style.css HTTP/1.1[0m" 304 -
+127.0.0.1 - - [18/Nov/2026 19:43:52] "[36mGET /static/app.js HTTP/1.1[0m" 304 -
+127.0.0.1 - - [18/Nov/2026 19:43:52] "GET /api/results HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:43:52] "GET /api/predict?P=56.89&I=8.082 HTTP/1.1" 200 -
+127.0.0.1 - - [18/Nov/2026 19:43:58] "GET /report HTTP/1.1" 200 -

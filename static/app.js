@@ -243,7 +243,13 @@ function render(){
   setupLevels(r.levels);
   const lvTxt = `${r.levels[0]}–${r.levels[r.levels.length-1]} %`;
   const sgn = v => v < 0 ? "− " + fmt(-v,4) : "+ " + fmt(v,4);
-  const corrEq = `${fmt(k[0],4)} ${sgn(k[1])}·Cp ${sgn(k[2])}·Cp² ${sgn(k[3])}·Cp³`;
+  const fitB = cfg.fit_B >= 0.5, deg = co.degree;
+  const kc = co.k_centered, cc0 = fx(kc.center,1);
+  const corrEq = deg === 0 ? "C = Cp (no correction)"
+    : [fmt(k[0],4), `${sgn(k[1])}·Cp`, deg>=2?`${sgn(k[2])}·Cp²`:"", deg>=3?`${sgn(k[3])}·Cp³`:""].filter(Boolean).join(" ");
+  const corrEqC = deg === 0 ? "" : [fmt(kc.b[0],4), `${sgn(kc.b[1])}·(Cp − ${cc0})`, deg>=2?`${sgn(kc.b[2])}·(Cp − ${cc0})²`:"", deg>=3?`${sgn(kc.b[3])}·(Cp − ${cc0})³`:""].filter(Boolean).join(" ");
+  const corrName = ["none","linear","quadratic","cubic"][deg];
+  const stage1Name = fitB ? "A and B" : "only A (B = 1)";
   const exclTxt = Object.entries(ol.by_level).filter(([c,n])=>n>0).map(([c,n])=>`${n} at ${c} %`).join(", ");
   const pct = (a,b) => (100*(1-b/a)).toFixed(0);
   $("#status").innerHTML = `<i></i>Calibrated · RMSE ${fx(co.metrics.RMSE,2)} %`;
@@ -263,8 +269,15 @@ function render(){
           <div class="inp"><input id="inI" type="number" step="any" min="0" value="8.082" inputmode="decimal"><span class="unit">µA</span></div></div>
         <div class="field"><label class="f" for="inEx">Or load a calibration reading</label>
           <div class="inp"><select id="inEx"><option value="">Choose a measured point…</option>${opts}</select><span class="unit">▾</span></div></div>
+        <div class="grid g2" style="gap:12px">
+          <div class="field"><label class="f" for="qFitB">Optimize</label>
+            <div class="inp"><select id="qFitB"><option value="1"${fitB?" selected":""}>A and B</option><option value="0"${fitB?"":" selected"}>Only A (B = 1)</option></select><span class="unit">▾</span></div></div>
+          <div class="field"><label class="f" for="qDeg">Correction</label>
+            <div class="inp"><select id="qDeg">${[[3,"Cubic"],[1,"Linear"],[0,"None"]].map(([v,t])=>`<option value="${v}"${deg===v?" selected":""}>${t}</option>`).join("")}</select><span class="unit">▾</span></div></div>
+        </div>
+        <p class="note" id="qInfo" style="margin:-6px 0 12px">Model in use: <b style="color:var(--text)">${fitB?"A and B":"only A"}${deg?` + ${corrName} correction`:", no correction"}</b> · A = ${fmt(ph.A,4)}, B = ${fmt(ph.B,4)} · RMSE ${fx(co.metrics.RMSE,2)} % (unseen ${fx(r.lopo.corrected.RMSE,2)} %)</p>
         <div class="row" style="justify-content:space-between;margin-top:6px">
-          <div class="seg" id="segModel"><button data-m="corr" class="on">Physics + correction</button><button data-m="phys">Physics only (A, B)</button></div>
+          <div class="seg" id="segModel"><button data-m="corr" class="on">Physics + correction</button><button data-m="phys">Physics only</button></div>
           <button class="btn primary" id="btnPredict">Predict</button>
         </div>
       </div>
@@ -292,8 +305,8 @@ function render(){
       Data: <code>${esc(r.source)}</code></p>
     <div class="tiles">
       <div class="tile"><div class="t">A · Knudsen correction</div><div class="v">${fmt(ph.A,4)}</div><div class="s">± ${fmt(ph.se_A,3)} (1σ)</div></div>
-      <div class="tile"><div class="t">B · bulk correction</div><div class="v">${fmt(ph.B,4)}</div><div class="s">± ${fmt(ph.se_B,3)} (1σ)</div></div>
-      <div class="tile"><div class="t">Correction k₀ · k₁ · k₂ · k₃</div><div class="v" style="font-size:14px;margin-top:10px;font-family:var(--mono)">${fmt(k[0],3)} · ${fmt(k[1],3)}<br>${fmt(k[2],3)} · ${fmt(k[3],3)}</div><div class="s">cubic in C_phys</div></div>
+      <div class="tile"><div class="t">B · bulk correction</div><div class="v">${fmt(ph.B,4)}</div><div class="s">${fitB ? `± ${fmt(ph.se_B,3)} (1σ)` : "fixed (only A optimized)"}</div></div>
+      <div class="tile"><div class="t">Correction · ${corrName}</div><div class="v" style="font-size:14px;margin-top:10px;font-family:var(--mono)">${deg===0?"C = Cp":`${fmt(kc.b[0],3)} at Cp=${cc0}<br>slope ${fmt(kc.b[1],3)}`}</div><div class="s">${deg===0?"no correction":"value and slope mid-range"}</div></div>
       <div class="tile"><div class="t">RMSE · theory A=B=1</div><div class="v">${fx(th.metrics.RMSE,2)} %</div><div class="s">R² ${fx(th.metrics.R2,3)}</div></div>
       <div class="tile"><div class="t">RMSE · physics fit</div><div class="v">${fx(ph.metrics.RMSE,2)} %</div><div class="s">R² ${fx(ph.metrics.R2,3)} · −${pct(th.metrics.RMSE,ph.metrics.RMSE)}%</div></div>
       <div class="tile"><div class="t">RMSE · physics + correction</div><div class="v">${fx(co.metrics.RMSE,2)} %</div><div class="s">R² ${fx(co.metrics.R2,3)} · −${pct(th.metrics.RMSE,co.metrics.RMSE)}%</div></div>
@@ -303,7 +316,7 @@ function render(){
       ${card("chLevel","Mean absolute error per concentration",`How each model performs at each concentration (${lvTxt}). Only readings used in the fit.`)}
       ${card("chResPhys","Residuals vs pressure · physics only (A, B)","Predicted − actual. A and B alone cannot match every concentration at once: the low concentrations show a clear bias.")}
       ${card("chResCorr","Residuals vs pressure · physics + correction","The same residuals after the correction, on the same y-scale.")}
-      ${card("chCorrMap","Result correction: physics output → concentration","x is the concentration predicted by the A,B physics model and y is the true concentration. The white curve is the fitted map, the dashed line is identity.")}
+      ${card("chCorrMap","Result correction: physics output → concentration",`x is the concentration from the physics model (${stage1Name}) and y is the true concentration. The white curve is the fitted ${corrName} map, the dashed line is identity (no correction).`)}
       ${card("chIP","Sensor current vs pressure · data and model","Points are measured. Solid lines are the calibrated model (physics + correction). Dashed lines are physics only.")}
     </div>
   </section>
@@ -323,14 +336,18 @@ function render(){
             <div class="eq">Loss(A,B) = Σᵢ [C_pred(Pᵢ, Iᵢ; A, B) − C_actual,ᵢ]²</div>
             LM is a blend of Gauss–Newton and gradient descent. Each step solves (JᵀJ + λ·diag JᵀJ)·Δ = −Jᵀr. The search runs over log A and log B, so both stay positive. It starts from the theory point (1, 1) and from the linear estimate, and keeps the lower loss.
             It converged in ${ph.history.length-1} iterations: SSE ${fmt(ph.history[0].loss,4)} → ${fmt(ph.history[ph.history.length-1].loss,4)}.</li>
-          <li><b>Identifiability check.</b> From the Jacobian at the optimum: corr(A, B) = ${fx(ph.corr_AB,3)}, condition number ${fmt(ph.cond,3)}.
+          <li><b>Identifiability check.</b> ${fitB ? `From the Jacobian at the optimum: corr(A, B) = ${fx(ph.corr_AB,3)}, condition number ${fmt(ph.cond,3)}.
             ${Math.abs(ph.corr_AB) < 0.95 ? "Both coefficients can be identified separately," : "A and B are strongly correlated,"} because the data spans the pressure range where the Knudsen share of resistance moves from
-            ${fx(Math.max(...r.diffusion.knudsen_share),0)} % to ${fx(Math.min(...r.diffusion.knudsen_share),0)} % (see the chart below).</li>
+            ${fx(Math.max(...r.diffusion.knudsen_share),0)} % to ${fx(Math.min(...r.diffusion.knudsen_share),0)} % (see the chart below).` : `Only A is optimized here and B is fixed at 1 (textbook bulk diffusion), so there is a single parameter: A = ${fmt(ph.A,4)} ± ${fmt(ph.se_A,3)}. See the comparison table in Validation for how much fitting B as well adds.`}</li>
           <li><b>Why A and B alone are not enough.</b> At a fixed pressure the physics says I ∝ −ln(1 − C/100). The measured currents follow that law well in the middle of the range, but not at every concentration (the 21 % current is lower than the law predicts). A and B only rescale the curve at each pressure, so they cannot bend its shape. The largest remaining error is at ${worst[0]} % (MAE ${fx(worst[1],2)} %).</li>
-          <li><b>Correction applied to the result.</b> With A and B fixed, the physics output is mapped through
-            <div class="eq">C = <span class="hl">k₀</span> + <span class="hl">k₁</span>·Cp + <span class="hl">k₂</span>·Cp² + <span class="hl">k₃</span>·Cp³<br>&nbsp; = ${corrEq}</div>
-            Cp is the physics result. The k values are found by ordinary least squares, which has an exact one-step solution. The code checks that the curve only goes up across the calibrated band (Cp ${fx(co.lo,1)}–${fx(co.hi,1)} %); if not, it drops to a quadratic, then a straight line. Outside the band it continues as a straight line, so a higher current always means a higher concentration. Degree used: ${co.degree}. RMSE drops from ${fx(ph.metrics.RMSE,2)} % to ${fx(co.metrics.RMSE,2)} %.</li>
-          <li><b>Outlier screen.</b> ${ol.enabled ? `The model is fitted, and any reading whose error is more than ${fmt(ol.z,2)} robust standard deviations (1.4826 × median absolute deviation = ${fx(ol.scale,2)} %) from the median is left out. This repeats until nothing changes. ${ol.n_excluded} readings were excluded: ${exclTxt || "none"}. You can switch this off in Parameters.` : "Switched off: every reading is used."}</li>
+          <li><b>Correction applied to the result.</b> ${deg === 0 ? "Switched off: the result is the physics output, C = Cp." : `With ${stage1Name} fixed, the physics output Cp is mapped through a ${corrName} polynomial:
+            <div class="eq">C = ${corrEq}</div>
+            k₀ (${fmt(k[0],3)}) is just where the extrapolated curve would cross Cp = 0, far outside the data (Cp ${fx(co.lo,1)}–${fx(co.hi,1)} %); it is not an offset that gets added to readings. Written around the middle of the data, the same curve is
+            <div class="eq">C = ${corrEqC}</div>
+            so at Cp = ${cc0} % it gives ${fx(kc.b[0],2)} % with slope ${fx(kc.b[1],3)}: close to the identity C = Cp, plus a small bend.
+            This form is empirical, not derived from physics: it was picked because it beat the other shapes tried (see the comparison table in Validation). A linear correction comes out as almost exactly C = Cp, because A and B already absorb any straight-line scaling, so only a curved correction can improve the fit.
+            The k values come from ordinary least squares (one exact step). The curve must only go up across Cp ${fx(co.lo,1)}–${fx(co.hi,1)} %; outside that band it continues as a straight line. RMSE ${fx(ph.metrics.RMSE,2)} % → ${fx(co.metrics.RMSE,2)} %.`}</li>
+          <li><b>Outlier screen.</b> ${ol.enabled ? `The model is fitted, and any reading whose error is more than ${fmt(ol.z,2)} robust standard deviations (1.4826 × median absolute deviation = ${fx(ol.scale,2)} %) from the median is left out. This repeats until nothing changes. The screen always uses the A, B + cubic model, so every model choice is scored on the same readings. ${ol.n_excluded} readings were excluded: ${exclTxt || "none"}. You can switch this off in Parameters.` : "Switched off: every reading is used."}</li>
         </ol>
       </div>
       <div class="grid" style="gap:16px">
@@ -350,9 +367,9 @@ function render(){
         <thead><tr><th>Parameter</th><th>Estimate</th><th>Std. error</th><th>95 % CI</th></tr></thead>
         <tbody>
           <tr><td class="l">A (Knudsen)</td><td>${fmt(ph.A,5)}</td><td>${fmt(ph.se_A,4)}</td><td>${fmt(ph.ci_A[0],4)} … ${fmt(ph.ci_A[1],4)}</td></tr>
-          <tr><td class="l">B (bulk)</td><td>${fmt(ph.B,5)}</td><td>${fmt(ph.se_B,4)}</td><td>${fmt(ph.ci_B[0],4)} … ${fmt(ph.ci_B[1],4)}</td></tr>
-          <tr><td class="l">corr(A, B)</td><td>${fx(ph.corr_AB,4)}</td><td class="dim">—</td><td class="dim">${Math.abs(ph.corr_AB)<0.95?"identifiable":"weakly identifiable"}</td></tr>
-          <tr><td class="l">k₀ · k₁ · k₂ · k₃</td><td>${k.map(v=>fmt(v,3)).join(" · ")}</td><td class="dim">—</td><td class="dim">deg ${co.degree}</td></tr>
+          <tr><td class="l">B (bulk)</td><td>${fmt(ph.B,5)}</td><td>${fitB?fmt(ph.se_B,4):"fixed"}</td><td>${fitB?`${fmt(ph.ci_B[0],4)} … ${fmt(ph.ci_B[1],4)}`:"—"}</td></tr>
+          <tr><td class="l">corr(A, B)</td><td>${fx(ph.corr_AB,4)}</td><td class="dim">—</td><td class="dim">${!fitB?"B fixed":Math.abs(ph.corr_AB)<0.95?"identifiable":"weakly identifiable"}</td></tr>
+          <tr><td class="l">k₀ · k₁ · k₂ · k₃</td><td>${k.map(v=>fmt(v,3)).join(" · ")}</td><td class="dim">—</td><td class="dim">${corrName}</td></tr>
           <tr><td class="l">Dk (constant)</td><td>${fmt(r.Dk,4)}</td><td class="dim">m²/s</td><td class="dim">—</td></tr>
         </tbody></table></div>
         <p class="note">A and B are relative to the geometry in <a href="#parameters">Parameters</a>. If you change a, S or L, A and B rescale to compensate, and the predicted concentrations stay the same. Enter the real sensor specs if you want A and B to have physical meaning.</p></div>
@@ -370,13 +387,18 @@ function render(){
         <tr><td class="l"><span class="sw" style="background:${COL.phys}"></span>Physics fit (A, B)</td><td>${fx(ph.metrics.RMSE,3)}</td><td>${fx(ph.metrics.MAE,3)}</td><td>${fx(ph.metrics.R2,4)}</td><td>${fx(r.holdout.physics.train.RMSE,3)}</td><td>${fx(r.holdout.physics.test.RMSE,3)}</td><td>${fx(r.lopo.physics.RMSE,3)}</td><td>${fx(r.lopo.physics.MAE,3)}</td><td>${fx(ph.metrics.MaxAE,2)}</td></tr>
         <tr><td class="l"><span class="sw" style="background:${COL.corr}"></span>Physics + correction</td><td>${fx(co.metrics.RMSE,3)}</td><td>${fx(co.metrics.MAE,3)}</td><td>${fx(co.metrics.R2,4)}</td><td>${fx(r.holdout.corrected.train.RMSE,3)}</td><td>${fx(r.holdout.corrected.test.RMSE,3)}</td><td>${fx(r.lopo.corrected.RMSE,3)}</td><td>${fx(r.lopo.corrected.MAE,3)}</td><td>${fx(co.metrics.MaxAE,2)}</td></tr>
       </tbody></table></div>
+    <h3 style="margin:28px 0 6px">Which parts are worth optimizing?</h3>
+    <p class="note" style="margin:0 0 12px">Every variant fitted on the same ${ol.n_used} readings. "Unseen" is leave-one-pressure-out. "Correct level" = unseen prediction rounded to the nearest concentration level. The highlighted row is the model the app uses now; change it in Parameters.</p>
+    <div class="tbl" style="max-height:none"><table>
+      <thead><tr><th>Model</th><th>Parameters</th><th>A</th><th>B</th><th>RMSE</th><th>MAE</th><th>RMSE unseen</th><th>Correct level</th><th>Max |error|</th></tr></thead>
+      <tbody>${r.comparison.map(v=>`<tr${v.selected?' style="background:#161616"':""}><td class="l">${v.selected?"▸ ":""}${esc(v.label)}</td><td>${v.n_params}</td><td>${fmt(v.A,4)}</td><td>${fmt(v.B,4)}</td><td>${fx(v.fit.RMSE,3)}</td><td>${fx(v.fit.MAE,3)}</td><td>${fx(v.lopo.RMSE,3)}</td><td>${fx(v.level_acc,1)} %</td><td>${fx(v.fit.MaxAE,2)}</td></tr>`).join("")}</tbody></table></div>
     <p class="note" style="margin-top:12px">All values are in % O₂. The cross-validated error is close to the fitted error, so the model is not overfitting. An exact 0 error is not possible with this data, because some readings go against the trend (sudden steps or dips within a column). The spreadsheet notes flag several handwritten values as uncertain, so check them against the original notebook. Use the model inside the calibrated range: P ${r.ranges.P[0]}–${r.ranges.P[1]} and C ${r.ranges.C[0]}–${r.ranges.C[1]} %.</p>
   </section>
 
   <section id="parameters">
     <p class="eyebrow">Configuration</p>
     <h2>Sensor &amp; operating parameters</h2>
-    <p class="lead">Change these to match your sensor and click Recalibrate. A, B and the correction are refitted on the same experimental data.</p>
+    <p class="lead">Choose what to optimize, change the sensor values to match your sensor, then click Recalibrate. Everything is refitted on the same experimental data.</p>
     <div class="card">
       <div class="params" id="params"></div>
       <div class="row" style="margin-top:8px"><button class="btn primary" id="btnCal">Recalibrate</button><button class="btn" id="btnReset">Reset defaults</button><span class="note" id="calMsg"></span></div>
@@ -398,9 +420,13 @@ function render(){
   const PDEF = [["T","Temperature T","K"],["a","Pore radius a","m"],["S","Cross-section S","m²"],["L","Thickness L","m"],
     ["M","O₂ molar mass M","kg/mol"],["D0","Reference diffusivity D0","m²/s"],["alpha","Temperature exponent α","—"],
     ["P0","Reference pressure P0","data unit"],["P_to_Pa","Pressure unit → Pa","×"],["I_to_A","Current unit → A","×"],
-    ["exclude_outliers","Exclude outliers (1 = yes, 0 = no)","0/1"],["outlier_z","Outlier cut-off","× MAD"]];
-  $("#params").innerHTML = PDEF.map(([k,l,u])=>`<div class="field"><label class="f" for="cfg_${k}">${l}</label><div class="inp"><input id="cfg_${k}" data-k="${k}" type="number" step="any" value="${cfg[k]}"><span class="unit">${u}</span></div></div>`).join("");
-  $("#btnCal").onclick = () => recalibrate("/api/calibrate", Object.fromEntries([...document.querySelectorAll("#params input")].map(i=>[i.dataset.k, i.value])));
+    ["outlier_z","Outlier cut-off","× MAD"]];
+  const SEL = [["fit_B","Stage 1 · coefficients to optimize",[[1,"A and B"],[0,"Only A (B fixed at 1)"]]],
+    ["correction_degree","Stage 2 · result correction",[[3,"Cubic"],[1,"Linear"],[0,"None"]]],
+    ["exclude_outliers","Outlier screen",[[1,"Exclude outliers"],[0,"Use every reading"]]]];
+  $("#params").innerHTML = SEL.map(([k,l,opts])=>`<div class="field"><label class="f" for="cfg_${k}">${l}</label><div class="inp"><select id="cfg_${k}" data-k="${k}">${opts.map(([v,t])=>`<option value="${v}"${Number(cfg[k])===v?" selected":""}>${t}</option>`).join("")}</select><span class="unit">▾</span></div></div>`).join("")
+    + PDEF.map(([k,l,u])=>`<div class="field"><label class="f" for="cfg_${k}">${l}</label><div class="inp"><input id="cfg_${k}" data-k="${k}" type="number" step="any" value="${cfg[k]}"><span class="unit">${u}</span></div></div>`).join("");
+  $("#btnCal").onclick = () => recalibrate("/api/calibrate", Object.fromEntries([...document.querySelectorAll("#params input, #params select")].map(i=>[i.dataset.k, i.value])));
   $("#btnReset").onclick = () => recalibrate("/api/reset", {});
 
   // predictor wiring
@@ -408,6 +434,8 @@ function render(){
   const go = () => { clearTimeout(tmr); tmr = setTimeout(doPredict, 140); };
   $("#inP").addEventListener("input", go); $("#inI").addEventListener("input", go);
   $("#btnPredict").onclick = doPredict;
+  const quick = () => recalibrate("/api/calibrate", {...R.config, fit_B: Number($("#qFitB").value), correction_degree: Number($("#qDeg").value)}, "#predict");
+  $("#qFitB").onchange = quick; $("#qDeg").onchange = quick;
   $("#inEx").onchange = e => { const i = e.target.value; if (i === "") return; $("#inP").value = r.obs.P[i]; $("#inI").value = r.obs.I[i]; doPredict(); };
   document.querySelectorAll("#segModel button").forEach(b => b.onclick = () => {
     MODEL = b.dataset.m; document.querySelectorAll("#segModel button").forEach(x=>x.classList.toggle("on", x===b)); showPrediction(); });
@@ -449,7 +477,7 @@ function drawCalibrationCharts(){
 
   plot($("#chCorrMap"), {x:{label:"Physics output C_phys (%)"}, y:{label:"Actual / corrected O₂ (%)"},
     series:[{name:"identity", type:"line", color:"#555", dash:"4 4", width:1.5, noHover:true, noExtent:true, pts:[[0,0],[100,100]]},
-      {name:"fitted cubic map", type:"line", color:COL.corr, pts:r.corrected.curve.x.map((x,i)=>[x, r.corrected.curve.y[i]]).filter(p=>p[0]>=r.ranges.C_phys[0]-4 && p[0]<=r.ranges.C_phys[1]+4)},
+      {name:"fitted correction map", type:"line", color:COL.corr, pts:r.corrected.curve.x.map((x,i)=>[x, r.corrected.curve.y[i]]).filter(p=>p[0]>=r.ranges.C_phys[0]-4 && p[0]<=r.ranges.C_phys[1]+4)},
       ...byLevel(i=>[o.C_phys[i], o.C[i], o.P[i], o.C_corr[i]])],
     tip:(p,s)=> p.length>2 ? [`C_phys ${fx(p[0],2)} % → corrected ${fx(p[3],2)} %`, `actual ${p[1]} % · P ${p[2]}`] : [`C_phys ${fx(p[0],2)} → ${fx(p[1],2)} %`]});
 
@@ -507,7 +535,7 @@ function showPrediction(){
     : `From P = ${fmt(p.P,4)} and I = ${fmt(p.I,4)} µA`;
   $("#outWarn").innerHTML = p.warnings.map(w=>`<div class="warn"><b>⚠</b><span>${esc(w)}</span></div>`).join("");
   $("#outKV").innerHTML = [
-    ["Physics + correction", fx(p.C_corr,3)+" %"], ["Physics only (A, B)", fx(p.C_phys,3)+" %"], ["Theory (A=B=1)", fx(p.C_theory,3)+" %"],
+    ["Physics + correction", fx(p.C_corr,3)+" %"], ["Physics only", fx(p.C_phys,3)+" %"], ["Theory (A=B=1)", fx(p.C_theory,3)+" %"],
     ["Dk", fmt(p.Dk,4)+" m²/s"], ["Db(T,P)", fmt(p.Db,4)+" m²/s"], ["Deff", fmt(p.Deff,4)+" m²/s"],
     ["Knudsen share", fx(p.knudsen_share,1)+" %"], ["Exponent u", fmt(p.u,4)], ["A · B", `${fmt(r.physics.A,4)} · ${fmt(r.physics.B,4)}`]
   ].map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
@@ -532,15 +560,17 @@ function showPrediction(){
     tip:(q,s)=>[`P ${fmt(q[0],4)} · I ${fx(q[1],3)} µA`]});
 }
 
-async function recalibrate(url, body){
+async function recalibrate(url, body, target="#parameters"){
   const b1 = $("#btnCal"), b2 = $("#btnReset"); b1.disabled = b2.disabled = true; $("#calMsg").textContent = "Calibrating…";
+  ["#qFitB","#qDeg"].forEach(s => { if ($(s)) $(s).disabled = true; }); if ($("#qInfo")) $("#qInfo").textContent = "Retraining…";
   try {
     const keepP = $("#inP").value, keepI = $("#inI").value;
     R = await api(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     render(); $("#inP").value = keepP; $("#inI").value = keepI; doPredict();
     toast(`Recalibrated · A=${fmt(R.physics.A,4)}, B=${fmt(R.physics.B,4)}, RMSE ${fx(R.corrected.metrics.RMSE,2)} %`);
-    location.hash = "#parameters";
-  } catch(e){ $("#calMsg").textContent = e.message; b1.disabled = b2.disabled = false; }
+    if (target === "#predict") { /* stay where the user is */ } else location.hash = target;
+  } catch(e){ $("#calMsg").textContent = e.message; if ($("#qInfo")) $("#qInfo").textContent = e.message; b1.disabled = b2.disabled = false;
+    ["#qFitB","#qDeg"].forEach(s => { if ($(s)) $(s).disabled = false; }); }
 }
 
 api("/api/results").then(j => { R = j; render(); }).catch(e => { $("#app").innerHTML = `<div class="loading">Failed to load: ${esc(e.message)}</div>`; });

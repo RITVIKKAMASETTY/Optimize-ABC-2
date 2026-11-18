@@ -37,8 +37,10 @@ DEFAULT_CONFIG = {
     "I_to_A": 1.0e-6,     # data current unit -> A (uA = 1e-6)
     "exclude_outliers": 1.0,   # 1 = leave out readings that disagree strongly with all others, 0 = use every reading
     "outlier_z": 3.5,          # cut-off in robust standard deviations (MAD)
+    "fit_B": 1.0,              # 1 = optimize A and B, 0 = optimize only A (B fixed at 1)
+    "correction_degree": 3.0,  # result correction: 0 = none, 1 = linear k0 + k1*Cp, 3 = cubic
 }
-NONNEG_KEYS = {"exclude_outliers"}
+NONNEG_KEYS = {"exclude_outliers", "fit_B", "correction_degree"}
 
 # Backup copy of the spreadsheet, used if no .xlsx file is found.
 FALLBACK_LEVELS = [21, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 95]
@@ -213,12 +215,15 @@ def correction_inverse(C, corr):
     return np.interp(np.asarray(C, float), y[keep], g[keep], left=np.nan, right=np.nan)
 
 
-def fit_correction(Cp, C):
-    """Least squares (closed form) for k0..k3. If the cubic is not monotonic over the
-    calibrated band, fall back to a quadratic, then a straight line."""
+def fit_correction(Cp, C, max_degree=3):
+    """Least squares (closed form) for k0..k3. If the polynomial is not monotonic over the
+    calibrated band, fall back to a lower degree. Degree 0 means no correction (C = Cp)."""
     lo, hi = float(np.min(Cp)), float(np.max(Cp))
+    max_degree = int(max(0, min(3, round(max_degree))))
+    if max_degree == 0:
+        return {"k": [0.0, 1.0, 0.0, 0.0], "lo": lo, "hi": hi, "degree": 0}
     grid = np.linspace(lo, hi, 400)
-    for deg in (3, 2, 1):
+    for deg in range(max_degree, 0, -1):
         V = np.vander(Cp, deg + 1, increasing=True)
         k = np.linalg.lstsq(V, C, rcond=None)[0]
         if np.all(np.diff(np.polyval(k[::-1], grid)) > 0):
@@ -287,6 +292,27 @@ def metrics(pred, actual):
 
 
 # ---------- Calibration ----------
+def fit_A_only(I, P, C, cfg):
+    """Stage 1 variant: B fixed at 1 (textbook bulk diffusion), only A is optimized.
+    Linear start: -ln(1 - C/100) - q = A p  ->  A = sum(p (X - q)) / sum(p^2), then LM over log A."""
+    p, q = basis(I, P, cfg)
+    X = -np.log(1.0 - C / 100.0)
+    a_lin = max(float(p @ (X - q) / (p @ p)), 1e-12)
+
+    def resid(theta):
+        return c_physics(I, P, math.exp(theta[0]), 1.0, cfg) - C
+
+    best = None
+    for s in (np.log([1.0]), np.log([a_lin])):
+        th, hist = levenberg_marquardt(resid, s)
+        if best is None or hist[-1]["loss"] < best[1][-1]["loss"] - 1e-12:
+            best = (th, hist)
+    th, hist = best
+    for h in hist:
+        h["A"], h["B"] = math.exp(h["x"][0]), 1.0
+    return math.exp(th[0]), 1.0, hist, {"A": a_lin, "B": 1.0}
+
+
 def fit_AB(I, P, C, cfg, start=(1.0, 1.0)):
     """Stage 1: find A, B > 0 minimising sum (C_phys - C_actual)^2.
     1. Linear start: -ln(1 - C/100) = A p + B q is linear in A, B, so ordinary least squares gives a guess.
@@ -311,8 +337,8 @@ def fit_AB(I, P, C, cfg, start=(1.0, 1.0)):
 
 
 def fit_model(I, P, C, cfg):
-    A, B, hist_ab, lin = fit_AB(I, P, C, cfg)
-    corr = fit_correction(c_physics(I, P, A, B, cfg), C)
+    A, B, hist_ab, lin = (fit_AB if cfg["fit_B"] else fit_A_only)(I, P, C, cfg)
+    corr = fit_correction(c_physics(I, P, A, B, cfg), C, cfg["correction_degree"])
     return {"A": A, "B": B, "corr": corr, "hist_ab": hist_ab, "lin": lin}
 
 
@@ -347,6 +373,11 @@ def parameter_statistics(I, P, C, A, B, cfg):
     u = A * p + B * q
     J = np.column_stack([100 * np.exp(-u) * p, 100 * np.exp(-u) * q])
     r = 100 * (1 - np.exp(-u)) - C
+    if not cfg["fit_B"]:                       # only A was fitted: one-parameter statistics
+        s2 = float(r @ r) / max(len(C) - 1, 1)
+        se = math.sqrt(s2 / float(J[:, 0] @ J[:, 0]))
+        return {"se_A": se, "se_B": None, "corr_AB": None, "cond": 1.0,
+                "ci_A": [A - 1.96 * se, A + 1.96 * se], "ci_B": [1.0, 1.0]}
     s2 = float(r @ r) / max(len(C) - 2, 1)
     cov = s2 * np.linalg.inv(J.T @ J)
     se = np.sqrt(np.diag(cov))
@@ -354,6 +385,17 @@ def parameter_statistics(I, P, C, A, B, cfg):
     return {"se_A": float(se[0]), "se_B": float(se[1]), "corr_AB": float(cov[0, 1] / (se[0] * se[1])),
             "cond": float(np.linalg.cond(Js.T @ Js)),
             "ci_A": [A - 1.96 * se[0], A + 1.96 * se[0]], "ci_B": [B - 1.96 * se[1], B + 1.96 * se[1]]}
+
+
+def centered_coefficients(corr):
+    """Rewrite C = k0 + k1 Cp + k2 Cp^2 + k3 Cp^3 around the middle of the calibrated band:
+    C = m + s (Cp - c) + b2 (Cp - c)^2 + b3 (Cp - c)^3. This shows what the correction really does
+    (value and slope where the data is), instead of k0, which is the value at Cp = 0, far outside the data."""
+    k = np.asarray(corr["k"], float)
+    c = 0.5 * (corr["lo"] + corr["hi"])
+    poly = np.poly1d(k[::-1])
+    b = [float(np.polyval(np.polyder(poly, n), c) / math.factorial(n)) if n else float(poly(c)) for n in range(4)]
+    return {"center": c, "b": b}
 
 
 def clean_config(cfg):
@@ -367,7 +409,9 @@ def clean_config(cfg):
 def calibrate(cfg):
     cfg = clean_config(cfg)
     I, P, C = OBS_I, OBS_P, OBS_C
-    used, scale = find_outliers(I, P, C, cfg)
+    # The screen always uses the most flexible model (A, B + cubic), so the trusted readings are the same
+    # whatever model is chosen. Otherwise a weak model would drop the readings it cannot fit and look better.
+    used, scale = find_outliers(I, P, C, {**cfg, "fit_B": 1.0, "correction_degree": 3.0})
     Iu, Pu, Cu = I[used], P[used], C[used]
 
     model = fit_model(Iu, Pu, Cu, cfg)
@@ -393,6 +437,31 @@ def calibrate(cfg):
         mm = fit_model(I[used & ~m], P[used & ~m], C[used & ~m], cfg)
         lp[m], lc[m] = predict(I[m], P[m], mm, cfg)
     lopo = {"physics": metrics(lp[used], Cu), "corrected": metrics(lc[used], Cu)}
+
+    # Compare model variants on the same trusted readings (fit on all + leave-one-pressure-out)
+    variants = [("Theory (A = B = 1)", None, 0), ("Only A (B = 1)", 0, 0), ("A and B", 1, 0),
+                ("Only A + linear", 0, 1), ("A, B + linear", 1, 1), ("Only A + cubic", 0, 3), ("A, B + cubic", 1, 3)]
+    comparison = []
+    for label, fb, deg in variants:
+        if fb is None:
+            fit = lambda Ix, Px, Cx: {"A": 1.0, "B": 1.0, "corr": fit_correction(c_physics(Ix, Px, 1, 1, cfg), Cx, 0)}
+        else:
+            vcfg = {**cfg, "fit_B": float(fb), "correction_degree": float(deg)}
+            fit = lambda Ix, Px, Cx, vcfg=vcfg: fit_model(Ix, Px, Cx, vcfg)
+        mv = fit(Iu, Pu, Cu)
+        pv = predict(Iu, Pu, mv, cfg)[1]
+        lo_pred = np.empty_like(Cu)
+        rows_u = OBS_ROW[used]
+        for rr in np.unique(rows_u):
+            t = rows_u == rr
+            lo_pred[t] = predict(Iu[t], Pu[t], fit(Iu[~t], Pu[~t], Cu[~t]), cfg)[1]
+        near = LEVELS[np.argmin(np.abs(lo_pred[:, None] - LEVELS[None, :]), axis=1)]
+        comparison.append({"label": label, "A": mv["A"], "B": mv["B"], "k": mv["corr"]["k"],
+                           "degree": mv["corr"]["degree"],
+                           "n_params": (0 if fb is None else 1 + fb) + (deg + 1 if deg else 0),
+                           "fit": metrics(pv, Cu), "lopo": metrics(lo_pred, Cu),
+                           "level_acc": float(np.mean(near == Cu) * 100),
+                           "selected": fb is not None and fb == int(cfg["fit_B"]) and deg == int(cfg["correction_degree"])})
 
     # Loss landscape over (A, B)
     pts_A = [A, 1.0, model["lin"]["A"]] + [h["A"] for h in model["hist_ab"]]
@@ -433,9 +502,10 @@ def calibrate(cfg):
         "physics": {"A": A, "B": B, "metrics": metrics(Cp[used], Cu), "lin": model["lin"],
                     "history": model["hist_ab"], **parameter_statistics(Iu, Pu, Cu, A, B, cfg)},
         "corrected": {"k": corr["k"], "lo": corr["lo"], "hi": corr["hi"], "degree": corr["degree"],
+                      "k_centered": centered_coefficients(corr),
                       "metrics": metrics(Cc[used], Cu),
                       "curve": {"x": cp_grid.tolist(), "y": correction(cp_grid, corr).tolist()}},
-        "holdout": holdout, "lopo": lopo,
+        "holdout": holdout, "lopo": lopo, "comparison": comparison,
         "landscape": {"A": gA.tolist(), "B": gB.tolist(), "logloss": np.log10(L).tolist()},
         "curves": curves,
         "diffusion": {"P": Pg.tolist(), "Dk": [Dk] * len(Pg), "Db": Db.tolist(),

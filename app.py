@@ -1,9 +1,12 @@
 """Flask web app. Run:  python app.py   (or from Jupyter: run.ipynb)"""
 import os
 import numpy as np
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
+
+import json
 
 from model import DEFAULT_CONFIG, STATE, calibrate, clean_config, predict_point
+from make_report import build_report
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "5050"))
@@ -14,6 +17,20 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+_REPORT_CACHE = {}
+
+
+@app.get("/report")
+def report():
+    """The model-selection report as a tab. It always explains the default model (A, B + cubic),
+    using the sensor parameters currently set in the app. Cached until those parameters change."""
+    key = json.dumps({k: v for k, v in STATE["cfg"].items() if k not in ("fit_B", "correction_degree")}, sort_keys=True)
+    if key not in _REPORT_CACHE:
+        _REPORT_CACHE.clear()
+        _REPORT_CACHE[key] = build_report(STATE["cfg"], nav=True)[0]
+    return Response(_REPORT_CACHE[key], mimetype="text/html")
 
 
 @app.get("/api/results")
