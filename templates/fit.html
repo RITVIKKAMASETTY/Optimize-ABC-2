@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zirconia O₂ · Fit A and B</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">O₂</span>Zirconia <span class="sub">· fit A and B</span></div>
+  <ol class="stepper" id="stepper">
+    <li class="on"><a href="#upload"><b>1</b><span>Upload</span></a></li>
+    <li class="locked"><a href="#columns"><b>2</b><span>Columns</span></a></li>
+    <li class="locked"><a href="#results"><b>3</b><span>Results</span></a></li>
+    <li class="locked"><a href="#predict"><b>4</b><span>Predict</span></a></li>
+  </ol>
+  <span class="status" id="status"><i></i>No file loaded</span>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <h1>Oxygen concentration from voltage, resistance and pressure</h1>
+    <p>Upload your measurements, tell the app which column is which, filter the rows (for example heater temperature &gt; 495),
+      and it fits the diffusion coefficients A and B four ways. Current is <code>I = V / R</code>.</p>
+  </div>
+
+  <!-- 1 · upload -->
+  <section class="panel" id="upload">
+    <div class="panel-h"><span class="num">1</span><div><h2>Upload data</h2><p>Excel (.xlsx) or CSV. One reading per row. The file stays on this computer.</p></div></div>
+    <div class="panel-b">
+      <label class="drop" id="drop" for="file">
+        <input id="file" type="file" accept=".xlsx,.xlsm,.csv,.txt,.tsv" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+        <span class="big-t">Drop a file here or <u>browse</u></span>
+        <small>.xlsx · .csv — try <b>example_data.csv</b> in the project folder</small>
+      </label>
+      <div class="filebar hidden" id="fileBar">
+        <span class="ic" id="fileExt">CSV</span>
+        <div style="min-width:0"><div class="nm" id="fileName"></div><div class="meta" id="fileMeta"></div></div>
+        <label class="btn" for="file">Change file</label>
+      </div>
+      <div class="err" id="upErr"></div>
+      <div id="sheetBox" class="hidden">
+        <div class="inline">
+          <div class="field" id="sheetField"><label class="f" for="sheet">Sheet</label><div class="inp"><select id="sheet"></select></div></div>
+          <div class="field"><label class="f" for="hdr">Header row (the row with column names)</label><div class="inp"><input id="hdr" type="number" min="1" step="1" value="1"><span class="unit">row</span></div></div>
+          <div class="field"><label class="f">Data rows below the header</label><div class="inp"><input id="nrows" disabled value="—"></div></div>
+        </div>
+        <div class="tbl preview"><table id="preview"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 · columns -->
+  <section class="panel hidden" id="columns">
+    <div class="panel-h"><span class="num">2</span><div><h2>Choose columns, units and filter</h2><p>Nothing is guessed from the names. Your choices are remembered for files with the same columns.</p></div></div>
+    <div class="panel-b">
+      <p class="sub-h">Columns</p>
+      <div class="maplist" id="map"></div>
+      <p class="sub-h">Use only rows where</p>
+      <p class="hint">Rows that fail any filter are left out. Leave the column empty for no filter.</p>
+      <div id="filters"></div>
+      <button class="btn" id="addFilter" type="button">+ Add filter</button>
+      <details class="consts"><summary>Sensor constants — placeholders, set them to your sensor's values</summary><div class="params" id="consts"></div></details>
+    </div>
+    <div class="foot"><button class="btn primary lg" id="run" type="button">Run the 4 optimizations</button><span class="note" id="runMsg"></span></div>
+  </section>
+
+  <!-- 3 · results -->
+  <section class="panel hidden" id="results">
+    <div class="panel-h"><span class="num">3</span><div><h2>Results</h2><p id="resSub"></p></div>
+      <div class="act"><button class="btn" id="dl" type="button">Download predictions (CSV)</button></div></div>
+    <div class="panel-b" id="resBody"></div>
+  </section>
+
+  <!-- 4 · predict -->
+  <section class="panel hidden" id="predict">
+    <div class="panel-h"><span class="num">4</span><div><h2>Predict concentration</h2><p>Enter one reading in the units chosen in step 2. The averaged A and B are used by default.</p></div></div>
+    <div class="panel-b">
+      <div class="grid g-pred">
+        <div id="predForm"></div>
+        <div class="card">
+          <div class="card-h"><h3>Predicted O₂ concentration</h3><span class="pill" id="predPill">Average</span></div>
+          <div class="big" id="predC">—</div>
+          <div class="note" id="predSub"></div>
+          <div class="tbl" style="margin-top:16px"><table id="predAll"></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+<footer>C = 100·[1 − exp(−(I·R·T·L / 4·F·S·P)·(A/Dk + B/Db))] · I = V / R · Flask + numpy · works offline, no CDN</footer>
+<div class="toast" id="toast"></div>
+<script src="/static/charts.js"></script>
+<script src="/static/fit.js"></script>
+</body>
+</html>
