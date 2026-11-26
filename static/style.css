@@ -188,3 +188,10 @@ tr.click:hover .go{color:var(--text)}
 .conds a:hover{border-color:var(--line-3);background:#0d0d0d}
 .conds a span{float:right;color:var(--muted);font-size:12px}
 @media (max-width:900px){.tabs a{padding:0 8px}}
+.cform{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:14px;align-items:end;max-width:760px}
+.cform .field{margin-bottom:14px}.cform .btn{margin-bottom:14px}
+.btn.chip{height:30px;padding:0 10px;font-size:12px;border-radius:999px}
+@media (max-width:760px){.cform{grid-template-columns:1fr}}
+.stepper li.extra{margin-left:10px;padding-left:10px;border-left:1px solid var(--line-2)}
+.stepper li.extra b{font-family:var(--sans);font-size:11px}
+.stepper li.extra:not(.locked) a{color:var(--text)}

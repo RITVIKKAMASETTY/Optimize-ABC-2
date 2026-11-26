@@ -18,8 +18,9 @@ const FACT = {voltage:{V:1,mV:1e-3,uV:1e-6}, resistance:{ohm:1,kohm:1e3,Mohm:1e6
 function card(id, title, desc, h){ return `<div class="card"><div class="card-h"><h3>${title}</h3></div><p class="desc">${desc}</p><div id="${id}" style="min-height:${h||260}px"></div></div>`; }
 
 function setStep(n){   // n = highest unlocked step
-  document.querySelectorAll("#stepper li").forEach((li,i) => {
+  document.querySelectorAll("#stepper li:not(.extra)").forEach((li,i) => {
     li.className = i+1 < n ? "done" : i+1 === n ? "on" : "locked"; });
+  $("#navCustom").className = "extra" + (n >= 4 ? "" : " locked");   // needs results
 }
 
 /* ---------- 1 · upload ---------- */

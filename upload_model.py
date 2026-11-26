@@ -391,3 +391,16 @@ def predict(V, R, P, T, A, B, units, c):
     Pp = P * UNITS["pressure"][units.get("pressure", "kPa")]
     Tk = (T + 273.15 if units.get("temperature", "C") == "C" else T) if T is not None else c["T_fixed"]
     return {"C": float(conc(I, Pp, Tk, A, B, c)), "I_uA": I * 1e6, "P_kPa": Pp / 1e3, "T_K": Tk}
+
+
+def evaluate(result, A, B):
+    """Concentration for every fitted row of the uploaded file with a user-chosen A and B (nothing optimized)."""
+    d, c = result["data"], result["constants"]
+    I = np.array(d["I_uA"]) * 1e-6
+    P = np.array(d["P_kPa"]) * 1e3
+    T = np.array(d["T_K"])
+    C = np.array(d["C"])
+    pred = conc(I, P, T, A, B, c)
+    return {"key": "custom", "label": f"Custom (A = {A:g}, B = {B:g})", "A": A, "B": B,
+            "iterations": 0, "history": [], "pred": pred.tolist(),
+            "metrics": metrics(pred, C), "per_level": per_level(pred, C)}

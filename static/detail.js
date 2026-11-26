@@ -1,8 +1,8 @@
 "use strict";
 /* Detail page for one condition: every row, per-concentration breakdown, how the fit was found. */
 const KEY = decodeURIComponent(location.pathname.split("/").pop());
-const MCOL = {theory:"#6e6e6e", A_only:"#3987e5", B_only:"#199e70", AB:"#d95926", K:"#c98500", avg:"#ededed"};
-const SHORT = {theory:"Theory", A_only:"1 · Optimize A", B_only:"2 · Optimize B", AB:"3 · Optimize A, B", K:"4 · Optimize K", avg:"Average"};
+const MCOL = {theory:"#6e6e6e", A_only:"#3987e5", B_only:"#199e70", AB:"#d95926", K:"#c98500", avg:"#ededed", custom:"#e87ba4"};
+const SHORT = {theory:"Theory", A_only:"1 · Optimize A", B_only:"2 · Optimize B", AB:"3 · Optimize A, B", K:"4 · Optimize K", avg:"Average", custom:"Custom A, B"};
 const WHAT = {
   theory: ["Nothing is optimized: A = B = 1 (the textbook Bosanquet combination).", "1/Deff = 1/Dk + 1/Db"],
   A_only: ["Only A is optimized; B is fixed at 1.", "1/Deff = A/Dk + 1/Db"],
@@ -10,6 +10,7 @@ const WHAT = {
   AB: ["A and B are optimized together.", "1/Deff = A/Dk + B/Db"],
   K: ["One factor K multiplies the whole Bosanquet sum (A = B = K).", "K/Deff = 1/Dk + 1/Db   ⇔   1/Deff = K/Dk + K/Db"],
   avg: ["A and B are the averages of conditions 1–4. Nothing is optimized directly.", "1/Deff = A_avg/Dk + B_avg/Db"],
+  custom: ["Your own A and B, applied to every row of the uploaded file. Nothing is optimized.", "1/Deff = A/Dk + B/Db"],
 };
 let RES = null, M = null, SORT = {col:"row", dir:1}, MINERR = 0;
 function card(id, title, desc, h){ return `<div class="card"><div class="card-h"><h3>${title}</h3></div><p class="desc">${desc}</p><div id="${id}" style="min-height:${h||260}px"></div></div>`; }
@@ -17,14 +18,55 @@ function card(id, title, desc, h){ return `<div class="card"><div class="card-h"
 api("/api/state").then(s => {
   RES = s.result;
   if (!RES){ $("#app").innerHTML = `<div class="panel"><div class="panel-b"><p>No results yet. <a href="/">Upload a file and run the optimizations</a> first.</p></div></div>`; return; }
+  $("#tabs").innerHTML = [...RES.models.map(m => m.key), "custom"].map(k => `<a href="/condition/${k}" class="${k===KEY?"on":""}"><i style="background:${MCOL[k]}"></i>${SHORT[k]}</a>`).join("");
+  if (KEY === "custom"){ customForm(); return; }
   M = RES.models.find(m => m.key === KEY);
-  $("#tabs").innerHTML = RES.models.map(m => `<a href="/condition/${m.key}" class="${m.key===KEY?"on":""}"><i style="background:${MCOL[m.key]}"></i>${SHORT[m.key]}</a>`).join("");
   if (!M){ $("#app").innerHTML = `<p>Unknown condition. Pick one above.</p>`; return; }
   document.title = `Zirconia O₂ · ${M.label}`;
   render();
 }).catch(e => $("#app").innerHTML = `<p class="err">${esc(e.message)}</p>`);
 
-function render(){
+/* ---------- Custom A, B: type values, calculate every row ---------- */
+function customForm(){
+  document.title = "Zirconia O₂ · Custom A, B";
+  const q = new URLSearchParams(location.search), avg = RES.models.find(m => m.key === "avg");
+  const A0 = q.get("A") ?? +avg.A.toPrecision(6), B0 = q.get("B") ?? +avg.B.toPrecision(6);
+  $("#app").innerHTML = `
+    <div class="hero">
+      <p class="eyebrow-s"><span class="sw" style="background:${MCOL.custom}"></span>${esc(RES.filename)} · ${RES.data.C.length} rows</p>
+      <h1>Custom A, B</h1>
+      <p>Type any A and B. The app calculates the concentration for every row of the uploaded file (same rows, units and filter as step 2)
+        and shows the errors. Nothing is optimized.</p>
+    </div>
+    <section class="panel"><div class="panel-h"><span class="num">✎</span><div><h2>Your values</h2>
+        <p>C = 100·[1 − exp(−(I·R·T·L / 4·F·S·P)·(A/Dk + B/Db))]. A = B = 1 is the theory.</p></div></div>
+      <div class="panel-b">
+        <div class="cform">
+          <div class="field"><label class="f" for="cA">A (Knudsen factor)</label><div class="inp big-in"><input id="cA" type="number" step="any" min="0" value="${esc(A0)}"></div></div>
+          <div class="field"><label class="f" for="cB">B (bulk factor)</label><div class="inp big-in"><input id="cB" type="number" step="any" min="0" value="${esc(B0)}"></div></div>
+          <button class="btn primary lg" id="cGo" type="button">Calculate</button>
+        </div>
+        <div class="row" style="margin-top:2px"><span class="note">Start from:</span>
+          ${RES.models.map(m => `<button class="btn chip" type="button" data-a="${m.A}" data-b="${m.B}">${SHORT[m.key]}</button>`).join("")}</div>
+        <p class="err" id="cErr"></p>
+      </div></section>
+    <div id="cOut"></div>`;
+  document.querySelectorAll(".chip").forEach(b => b.onclick = () => { $("#cA").value = +(+b.dataset.a).toPrecision(6); $("#cB").value = +(+b.dataset.b).toPrecision(6); calc(); });
+  $("#cGo").onclick = calc;
+  ["#cA","#cB"].forEach(s => $(s).addEventListener("keydown", e => { if (e.key === "Enter") calc(); }));
+  calc();
+}
+async function calc(){
+  $("#cErr").textContent = "";
+  try {
+    M = await api("/api/evaluate", {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({A:$("#cA").value, B:$("#cB").value})});
+    history.replaceState(null, "", `/condition/custom?A=${encodeURIComponent($("#cA").value)}&B=${encodeURIComponent($("#cB").value)}`);
+    render($("#cOut"));
+  } catch(e){ $("#cErr").textContent = e.message; }
+}
+
+function render(target){
   const r = RES, d = r.data, m = M, mt = m.metrics, n = d.C.length;
   const err = d.C.map((c,i) => m.pred[i] - c);
   const others = Object.fromEntries(r.models.map(x => [x.key, x]));
@@ -47,27 +89,35 @@ function render(){
         ${four.map(x => `<tr><td class="l"><a href="/condition/${x.key}">${esc(x.label)}</a></td><td>${fmt(x.A,5)}</td><td>${fmt(x.B,5)}</td><td>${fx(x.metrics.RMSE,3)}</td></tr>`).join("")}
         <tr class="best"><td class="l">Average</td><td>${fmt(m.A,5)}</td><td>${fmt(m.B,5)}</td><td>${fx(mt.RMSE,3)}</td></tr></tbody></table></div>
       <div class="eq">A_avg = (${four.map(x=>fmt(x.A,4)).join(" + ")}) / 4 = ${fmt(m.A,5)}<br>B_avg = (${four.map(x=>fmt(x.B,4)).join(" + ")}) / 4 = ${fmt(m.B,5)}</div>`;
+  } else if (m.key === "custom"){
+    const rows = [...r.models, m].sort((a,b) => a.metrics.RMSE - b.metrics.RMSE);
+    const rank = rows.findIndex(x => x === m) + 1;
+    how = `<p class="note">Nothing is fitted: A and B are the values you entered. Compared with the fitted conditions on the same ${n} rows,
+        your values rank <b>${rank} of ${rows.length}</b> by RMSE (lowest first).</p>
+      <div class="tbl" style="margin-top:12px"><table><thead><tr><th class="l">Model</th><th>A</th><th>B</th><th>RMSE %</th><th>MAE %</th><th>Max |error| %</th><th>R²</th></tr></thead><tbody>
+        ${rows.map(x => `<tr class="${x===m?"best":""}"><td class="l"><span class="sw" style="background:${MCOL[x.key]}"></span>${x===m?"Your A, B":`<a href="/condition/${x.key}">${esc(x.label)}</a>`}</td>
+          <td>${fmt(x.A,5)}</td><td>${fmt(x.B,5)}</td><td>${fx(x.metrics.RMSE,3)}</td><td>${fx(x.metrics.MAE,3)}</td><td>${fx(x.metrics.MaxAE,2)}</td><td>${fx(x.metrics.R2,4)}</td></tr>`).join("")}</tbody></table></div>`;
   } else {
     how = `<p class="note">Nothing is optimized. This is the textbook model, shown as the baseline the other conditions improve on.</p>`;
   }
 
-  const lv = m.per_level;
-  $("#app").innerHTML = `
+  const lv = m.per_level, custom = m.key === "custom";
+  (target || $("#app")).innerHTML = (custom ? "" : `
     <div class="hero">
       <p class="eyebrow-s"><span class="sw" style="background:${MCOL[m.key]}"></span>${esc(r.filename)} · ${n} rows</p>
       <h1>${esc(m.label)}</h1>
       <p>${WHAT[m.key][0]}</p>
       <div class="eq" style="max-width:640px">${WHAT[m.key][1]}</div>
-    </div>
+    </div>`) + `
     <div class="tiles">
-      <div class="tile"><div class="t">A</div><div class="v">${fmt(m.A,5)}</div><div class="s">${["theory","B_only"].includes(m.key)?"fixed":"result"}</div></div>
-      <div class="tile"><div class="t">B</div><div class="v">${fmt(m.B,5)}</div><div class="s">${["theory","A_only"].includes(m.key)?"fixed":"result"}</div></div>
+      <div class="tile"><div class="t">A</div><div class="v">${fmt(m.A,5)}</div><div class="s">${custom?"entered":["theory","B_only"].includes(m.key)?"fixed":"result"}</div></div>
+      <div class="tile"><div class="t">B</div><div class="v">${fmt(m.B,5)}</div><div class="s">${custom?"entered":["theory","A_only"].includes(m.key)?"fixed":"result"}</div></div>
       <div class="tile"><div class="t">RMSE</div><div class="v">${fx(mt.RMSE,3)} %</div><div class="s">R² ${fx(mt.R2,4)}</div></div>
       <div class="tile"><div class="t">MAE · max |error|</div><div class="v">${fx(mt.MAE,3)} %</div><div class="s">max ${fx(mt.MaxAE,2)} % · bias ${fx(mt.Bias,3)}</div></div>
       <div class="tile"><div class="t">Rows within ±1 / ±2 / ±5 %</div><div class="v" style="font-size:19px;margin-top:10px">${fx(mt.within1,0)} / ${fx(mt.within2,0)} / ${fx(mt.within5,0)} %</div><div class="s">of ${n} rows</div></div>
     </div>
 
-    <section class="panel"><div class="panel-h"><span class="num">A</span><div><h2>How this result was found</h2><p>Starting point, every optimizer step and the averaging, where it applies.</p></div></div>
+    <section class="panel"><div class="panel-h"><span class="num">A</span><div><h2>${custom ? "Compared with the fitted conditions" : "How this result was found"}</h2><p>${custom ? "Same rows, sorted by RMSE." : "Starting point, every optimizer step and the averaging, where it applies."}</p></div></div>
       <div class="panel-b">${how}</div></section>
 
     <section class="panel"><div class="panel-h"><span class="num">B</span><div><h2>Per known concentration</h2>

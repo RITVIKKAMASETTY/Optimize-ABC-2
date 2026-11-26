@@ -83,6 +83,22 @@ def api_fit():
     return jsonify(res)
 
 
+@app.post("/api/evaluate")
+def api_evaluate():
+    """Your own A and B applied to every fitted row: predictions, errors and the same statistics."""
+    body = request.get_json(silent=True) or {}
+    res = UPLOAD.get("result")
+    if not res:
+        return jsonify({"error": "Run the optimization first."}), 400
+    try:
+        A, B = float(body["A"]), float(body["B"])
+        if not (np.isfinite(A) and np.isfinite(B)) or A < 0 or B < 0 or A + B == 0:
+            raise ValueError
+    except (KeyError, ValueError, TypeError):
+        return jsonify({"error": "Enter A and B as numbers ≥ 0 (not both 0)."}), 400
+    return jsonify(um.evaluate(res, A, B))
+
+
 @app.post("/api/predict")
 def api_predict():
     body = request.get_json(silent=True) or {}
